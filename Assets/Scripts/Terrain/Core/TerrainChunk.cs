@@ -51,11 +51,11 @@ public class TerrainChunk : MonoBehaviour
         {
             cells = cells,
             chunkSize = chunkSize,
-            vertices = vertices.AsParallelWriter(),
-            triangles = triangles.AsParallelWriter()
+            vertices = vertices,
+            triangles = triangles
         };
 
-        var handle = job.Schedule(cells.Length, 64);
+        var handle = job.Schedule();
         handle.Complete();
 
         Mesh mesh = new Mesh();

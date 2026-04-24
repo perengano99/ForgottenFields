@@ -1,133 +1,133 @@
+// === GENERATE TERRAIN MESH JOB ===
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
+using Unity.Mathematics;
 using UnityEngine;
 
-// === GENERATE TERRAIN MESH JOB ===
+// Note: Convertido a IJob. El paralelismo estricto requiere pre-calcular offsets si se omiten celdas (Aire).
 [BurstCompile(CompileSynchronously = true)]
-public struct GenerateTerrainMeshJob : IJobParallelFor
+public struct GenerateTerrainMeshJob : IJob
 {
-    // === INPUT ===
     [ReadOnly] public NativeArray<CellData> cells;
     public int chunkSize;
 
-    // === OUTPUT ===
-    [WriteOnly] public NativeList<Vector3>.ParallelWriter vertices;
-    [WriteOnly] public NativeList<int>.ParallelWriter triangles;
+    public NativeList<Vector3> vertices;
+    public NativeList<int> triangles;
 
-    // === TRIANGLE LUT ===
-    private static readonly int[] SolidTriangles =
+    public void Execute()
     {
-        0, 2, 1, 0, 3, 2,
-        4, 5, 6, 4, 6, 7,
-        0, 1, 5, 0, 5, 4,
-        1, 2, 6, 1, 6, 5,
-        2, 3, 7, 2, 7, 6,
-        3, 0, 4, 3, 4, 7
-    };
-
-    private static readonly int[] SlopeNTriangles =
-    {
-        0, 2, 1,
-        0, 3, 2,
-        0, 1, 5,
-        0, 5, 4,
-        1, 2, 5,
-        2, 3, 4,
-        2, 4, 5,
-        3, 0, 4
-    };
-
-    private static readonly int[] SlopeSTriangles =
-    {
-        0, 2, 1,
-        0, 3, 2,
-        0, 1, 5,
-        0, 5, 4,
-        1, 2, 5,
-        2, 3, 4,
-        2, 4, 5,
-        3, 0, 4
-    };
-
-    private static readonly int[] SlopeETriangles =
-    {
-        0, 2, 1,
-        0, 3, 2,
-        0, 1, 5,
-        0, 5, 4,
-        1, 2, 5,
-        2, 3, 4,
-        2, 4, 5,
-        3, 0, 4
-    };
-
-    private static readonly int[] SlopeWTriangles =
-    {
-        0, 2, 1,
-        0, 3, 2,
-        0, 1, 5,
-        0, 5, 4,
-        1, 2, 5,
-        2, 3, 4,
-        2, 4, 5,
-        3, 0, 4
-    };
-
-    // === EXECUTE ===
-    public void Execute(int index)
-    {
-        int x = index % chunkSize;
-        int z = index / chunkSize;
-
-        CellData cell = cells[index];
-        if (cell.topologyID == (byte)BlockTopology.Air)
+        for (int i = 0; i < cells.Length; i++)
         {
-            return;
-        }
-
-        Vector3[] localVertices = TopologyLUT.VerticesByTopology[cell.topologyID];
-        int[] localTriangles = GetTriangles(cell.topologyID);
-
-        float normalizedHeight = (float)cell.heightLevel / TerrainTopologyData.HEIGHT_STEPS;
-        Vector3 chunkOffset = new Vector3(x, 0f, z);
-
-        int baseVertex = index * 8;
-
-        for (int i = 0; i < localVertices.Length; i++)
-        {
-            Vector3 v = localVertices[i];
-            if (v.y > 0f)
-            {
-                v.y *= normalizedHeight;
-            }
-
-            vertices.AddNoResize(v + chunkOffset);
-        }
-
-        for (int i = 0; i < localTriangles.Length; i++)
-        {
-            triangles.AddNoResize(baseVertex + localTriangles[i]);
+            ProcessCell(i);
         }
     }
 
-    // === HELPERS ===
-    private static int[] GetTriangles(byte topologyID)
+    private void ProcessCell(int index)
     {
-        switch ((BlockTopology)topologyID)
+        CellData cell = cells[index];
+        if (cell.topologyID == (byte)BlockTopology.Air) return;
+
+        int x = index % chunkSize;
+        int z = index / chunkSize;
+        Vector3 offset = new Vector3(x, 0, z);
+
+        // Asume 12 divisiones como definido en TerrainTopologyData
+        float h = (float)cell.heightLevel / 12f;
+        int baseV = vertices.Length;
+
+        // Note: Lógica unmanaged Burst-Compatible (Sin arreglos dinámicos)
+        switch ((BlockTopology)cell.topologyID)
         {
             case BlockTopology.Solid:
-                return SolidTriangles;
+                AddVert(new Vector3(0, 0, 0), offset, h, false);
+                AddVert(new Vector3(1, 0, 0), offset, h, false);
+                AddVert(new Vector3(1, 0, 1), offset, h, false);
+                AddVert(new Vector3(0, 0, 1), offset, h, false);
+                AddVert(new Vector3(0, 1, 0), offset, h, true);
+                AddVert(new Vector3(1, 1, 0), offset, h, true);
+                AddVert(new Vector3(1, 1, 1), offset, h, true);
+                AddVert(new Vector3(0, 1, 1), offset, h, true);
+
+                AddTri(baseV, new int3(0, 2, 1)); AddTri(baseV, new int3(0, 3, 2));
+                AddTri(baseV, new int3(4, 5, 6)); AddTri(baseV, new int3(4, 6, 7));
+                AddTri(baseV, new int3(0, 1, 5)); AddTri(baseV, new int3(0, 5, 4));
+                AddTri(baseV, new int3(1, 2, 6)); AddTri(baseV, new int3(1, 6, 5));
+                AddTri(baseV, new int3(2, 3, 7)); AddTri(baseV, new int3(2, 7, 6));
+                AddTri(baseV, new int3(3, 0, 4)); AddTri(baseV, new int3(3, 4, 7));
+                break;
+
             case BlockTopology.SlopeN:
-                return SlopeNTriangles;
+                AddVert(new Vector3(0, 0, 0), offset, h, false);
+                AddVert(new Vector3(1, 0, 0), offset, h, false);
+                AddVert(new Vector3(1, 0, 1), offset, h, false);
+                AddVert(new Vector3(0, 0, 1), offset, h, false);
+                AddVert(new Vector3(0, 1, 1), offset, h, true);
+                AddVert(new Vector3(1, 1, 1), offset, h, true);
+
+                AddTri(baseV, new int3(0, 2, 1)); AddTri(baseV, new int3(0, 3, 2));
+                AddTri(baseV, new int3(0, 1, 5)); AddTri(baseV, new int3(0, 5, 4));
+                AddTri(baseV, new int3(1, 2, 5)); AddTri(baseV, new int3(2, 3, 4));
+                AddTri(baseV, new int3(2, 4, 5)); AddTri(baseV, new int3(3, 0, 4));
+                break;
+
             case BlockTopology.SlopeS:
-                return SlopeSTriangles;
+                AddVert(new Vector3(0, 0, 1), offset, h, false);
+                AddVert(new Vector3(1, 0, 1), offset, h, false);
+                AddVert(new Vector3(1, 0, 0), offset, h, false);
+                AddVert(new Vector3(0, 0, 0), offset, h, false);
+                AddVert(new Vector3(0, 1, 0), offset, h, true);
+                AddVert(new Vector3(1, 1, 0), offset, h, true);
+
+                AddTri(baseV, new int3(0, 2, 1)); AddTri(baseV, new int3(0, 3, 2));
+                AddTri(baseV, new int3(0, 1, 5)); AddTri(baseV, new int3(0, 5, 4));
+                AddTri(baseV, new int3(1, 2, 5)); AddTri(baseV, new int3(2, 3, 4));
+                AddTri(baseV, new int3(2, 4, 5)); AddTri(baseV, new int3(3, 0, 4));
+                break;
+
             case BlockTopology.SlopeE:
-                return SlopeETriangles;
+                AddVert(new Vector3(0, 0, 0), offset, h, false);
+                AddVert(new Vector3(0, 0, 1), offset, h, false);
+                AddVert(new Vector3(1, 0, 1), offset, h, false);
+                AddVert(new Vector3(1, 0, 0), offset, h, false);
+                AddVert(new Vector3(1, 1, 0), offset, h, true);
+                AddVert(new Vector3(1, 1, 1), offset, h, true);
+
+                AddTri(baseV, new int3(0, 2, 1)); AddTri(baseV, new int3(0, 3, 2));
+                AddTri(baseV, new int3(0, 1, 5)); AddTri(baseV, new int3(0, 5, 4));
+                AddTri(baseV, new int3(1, 2, 5)); AddTri(baseV, new int3(2, 3, 4));
+                AddTri(baseV, new int3(2, 4, 5)); AddTri(baseV, new int3(3, 0, 4));
+                break;
+
             case BlockTopology.SlopeW:
-                return SlopeWTriangles;
-            default:
-                return SolidTriangles;
+                AddVert(new Vector3(1, 0, 0), offset, h, false);
+                AddVert(new Vector3(1, 0, 1), offset, h, false);
+                AddVert(new Vector3(0, 0, 1), offset, h, false);
+                AddVert(new Vector3(0, 0, 0), offset, h, false);
+                AddVert(new Vector3(0, 1, 0), offset, h, true);
+                AddVert(new Vector3(0, 1, 1), offset, h, true);
+
+                AddTri(baseV, new int3(0, 2, 1)); AddTri(baseV, new int3(0, 3, 2));
+                AddTri(baseV, new int3(0, 1, 5)); AddTri(baseV, new int3(0, 5, 4));
+                AddTri(baseV, new int3(1, 2, 5)); AddTri(baseV, new int3(2, 3, 4));
+                AddTri(baseV, new int3(2, 4, 5)); AddTri(baseV, new int3(3, 0, 4));
+                break;
         }
+    }
+
+    private void AddVert(Vector3 localPos, Vector3 chunkOffset, float heightMod, bool applyHeight)
+    {
+        if (applyHeight)
+        {
+            localPos.y *= heightMod;
+        }
+        vertices.Add(localPos + chunkOffset);
+    }
+
+    private void AddTri(int baseIndex, int3 indices)
+    {
+        triangles.Add(baseIndex + indices.x);
+        triangles.Add(baseIndex + indices.y);
+        triangles.Add(baseIndex + indices.z);
     }
 }
