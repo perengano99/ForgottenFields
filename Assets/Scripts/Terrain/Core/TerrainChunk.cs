@@ -9,27 +9,44 @@ public class TerrainChunk : MonoBehaviour
     // === FIELDS ===
     public int chunkSize = 16;
     private NativeArray<CellData> cells;
+    private NativeArray<ComplexCell> palette;
 
     // === UNITY EVENTS ===
     private void Awake()
     {
         cells = new NativeArray<CellData>(chunkSize * chunkSize, Allocator.Persistent);
+        palette = new NativeArray<ComplexCell>(2, Allocator.Persistent);
+
+        palette[0] = new ComplexCell
+        {
+            block0 = new SubBlockData { materialID = 1, topologyID = (byte)BlockTopology.Solid, heightLevel = 12 },
+            activeCount = 1
+        };
+
+        palette[1] = new ComplexCell
+        {
+            activeCount = 0
+        };
 
         for (int z = 0; z < chunkSize; z++)
         {
             for (int x = 0; x < chunkSize; x++)
             {
                 int index = z * chunkSize + x;
-                bool isSolid = Random.value > 0.35f;
+                ushort pIndex = (ushort)(Random.value > 0.35f ? 0 : 1);
 
                 cells[index] = new CellData
                 {
-                    topologyID = isSolid ? (byte)BlockTopology.Solid : (byte)BlockTopology.Air,
-                    heightLevel = isSolid ? (byte)12 : (byte)0
+                    paletteIndex = pIndex
                 };
             }
         }
 
+        UpdateMesh();
+    }
+
+    private void Start()
+    {
         UpdateMesh();
     }
 
@@ -39,6 +56,11 @@ public class TerrainChunk : MonoBehaviour
         {
             cells.Dispose();
         }
+
+        if (palette.IsCreated)
+        {
+            palette.Dispose();
+        }
     }
 
     // === MESH GENERATION ===
@@ -46,13 +68,16 @@ public class TerrainChunk : MonoBehaviour
     {
         NativeList<Vector3> vertices = new NativeList<Vector3>(chunkSize * chunkSize * 8, Allocator.TempJob);
         NativeList<int> triangles = new NativeList<int>(chunkSize * chunkSize * 36, Allocator.TempJob);
+        NativeList<Vector2> uvs = new NativeList<Vector2>(Allocator.TempJob);
 
         GenerateTerrainMeshJob job = new GenerateTerrainMeshJob
         {
             cells = cells,
+            palette = palette,
             chunkSize = chunkSize,
             vertices = vertices,
-            triangles = triangles
+            triangles = triangles,
+            uvs = uvs
         };
 
         var handle = job.Schedule();
@@ -61,11 +86,13 @@ public class TerrainChunk : MonoBehaviour
         Mesh mesh = new Mesh();
         mesh.vertices = vertices.AsArray().ToArray();
         mesh.triangles = triangles.AsArray().ToArray();
+        mesh.SetUVs(0, uvs.AsArray());
         mesh.RecalculateNormals();
 
         GetComponent<MeshFilter>().sharedMesh = mesh;
 
         vertices.Dispose();
         triangles.Dispose();
+        uvs.Dispose();
     }
 }

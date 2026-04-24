@@ -20,8 +20,25 @@ public enum BlockTopology : byte
 // === CELL DATA ===
 public struct CellData
 {
+    public ushort paletteIndex;
+}
+
+// === SUB BLOCK DATA ===
+public struct SubBlockData
+{
+    public byte materialID;
     public byte topologyID;
     public byte heightLevel;
+}
+
+// === COMPLEX CELL ===
+public struct ComplexCell
+{
+    public SubBlockData block0;
+    public SubBlockData block1;
+    public SubBlockData block2;
+    public SubBlockData block3;
+    public byte activeCount;
 }
 
 // === TOPOLOGY LOOKUP TABLE ===
