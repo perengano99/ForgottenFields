@@ -68,7 +68,7 @@ public class TerrainChunk : MonoBehaviour
     {
         NativeList<Vector3> vertices = new NativeList<Vector3>(chunkSize * chunkSize * 8, Allocator.TempJob);
         NativeList<int> triangles = new NativeList<int>(chunkSize * chunkSize * 36, Allocator.TempJob);
-        NativeList<Vector2> uvs = new NativeList<Vector2>(Allocator.TempJob);
+        NativeList<Vector3> uvs = new NativeList<Vector3>(Allocator.TempJob);
 
         GenerateTerrainMeshJob job = new GenerateTerrainMeshJob
         {

@@ -15,7 +15,7 @@ public struct GenerateTerrainMeshJob : IJob
 
     public NativeList<Vector3> vertices;
     public NativeList<int> triangles;
-    public NativeList<Vector2> uvs;
+    public NativeList<Vector3> uvs;
 
     public void Execute()
     {
@@ -57,14 +57,14 @@ public struct GenerateTerrainMeshJob : IJob
             switch ((BlockTopology)subBlock.topologyID)
             {
                 case BlockTopology.Solid:
-                    AddVert(new Vector3(0, 0, 0), offset, h, false);
-                    AddVert(new Vector3(1, 0, 0), offset, h, false);
-                    AddVert(new Vector3(1, 0, 1), offset, h, false);
-                    AddVert(new Vector3(0, 0, 1), offset, h, false);
-                    AddVert(new Vector3(0, 1, 0), offset, h, true);
-                    AddVert(new Vector3(1, 1, 0), offset, h, true);
-                    AddVert(new Vector3(1, 1, 1), offset, h, true);
-                    AddVert(new Vector3(0, 1, 1), offset, h, true);
+                    AddVert(new Vector3(0, 0, 0), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(1, 0, 0), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(1, 0, 1), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(0, 0, 1), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(0, 1, 0), offset, h, true, subBlock.materialID);
+                    AddVert(new Vector3(1, 1, 0), offset, h, true, subBlock.materialID);
+                    AddVert(new Vector3(1, 1, 1), offset, h, true, subBlock.materialID);
+                    AddVert(new Vector3(0, 1, 1), offset, h, true, subBlock.materialID);
 
                     AddTri(baseV, new int3(0, 1, 5)); AddTri(baseV, new int3(0, 5, 4));
                     AddTri(baseV, new int3(3, 7, 6)); AddTri(baseV, new int3(3, 6, 2));
@@ -75,12 +75,12 @@ public struct GenerateTerrainMeshJob : IJob
                     break;
 
                 case BlockTopology.SlopeN:
-                    AddVert(new Vector3(0, 0, 0), offset, h, false);
-                    AddVert(new Vector3(1, 0, 0), offset, h, false);
-                    AddVert(new Vector3(1, 0, 1), offset, h, false);
-                    AddVert(new Vector3(0, 0, 1), offset, h, false);
-                    AddVert(new Vector3(0, 1, 1), offset, h, true);
-                    AddVert(new Vector3(1, 1, 1), offset, h, true);
+                    AddVert(new Vector3(0, 0, 0), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(1, 0, 0), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(1, 0, 1), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(0, 0, 1), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(0, 1, 1), offset, h, true, subBlock.materialID);
+                    AddVert(new Vector3(1, 1, 1), offset, h, true, subBlock.materialID);
 
                     AddTri(baseV, new int3(1, 2, 0)); AddTri(baseV, new int3(2, 3, 0));
                     AddTri(baseV, new int3(5, 1, 0)); AddTri(baseV, new int3(4, 5, 0));
@@ -89,12 +89,12 @@ public struct GenerateTerrainMeshJob : IJob
                     break;
 
                 case BlockTopology.SlopeS:
-                    AddVert(new Vector3(0, 0, 1), offset, h, false);
-                    AddVert(new Vector3(1, 0, 1), offset, h, false);
-                    AddVert(new Vector3(1, 0, 0), offset, h, false);
-                    AddVert(new Vector3(0, 0, 0), offset, h, false);
-                    AddVert(new Vector3(0, 1, 0), offset, h, true);
-                    AddVert(new Vector3(1, 1, 0), offset, h, true);
+                    AddVert(new Vector3(0, 0, 1), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(1, 0, 1), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(1, 0, 0), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(0, 0, 0), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(0, 1, 0), offset, h, true, subBlock.materialID);
+                    AddVert(new Vector3(1, 1, 0), offset, h, true, subBlock.materialID);
 
                     AddTri(baseV, new int3(1, 2, 0)); AddTri(baseV, new int3(2, 3, 0));
                     AddTri(baseV, new int3(5, 1, 0)); AddTri(baseV, new int3(4, 5, 0));
@@ -103,12 +103,12 @@ public struct GenerateTerrainMeshJob : IJob
                     break;
 
                 case BlockTopology.SlopeE:
-                    AddVert(new Vector3(0, 0, 0), offset, h, false);
-                    AddVert(new Vector3(0, 0, 1), offset, h, false);
-                    AddVert(new Vector3(1, 0, 1), offset, h, false);
-                    AddVert(new Vector3(1, 0, 0), offset, h, false);
-                    AddVert(new Vector3(1, 1, 0), offset, h, true);
-                    AddVert(new Vector3(1, 1, 1), offset, h, true);
+                    AddVert(new Vector3(0, 0, 0), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(0, 0, 1), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(1, 0, 1), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(1, 0, 0), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(1, 1, 0), offset, h, true, subBlock.materialID);
+                    AddVert(new Vector3(1, 1, 1), offset, h, true, subBlock.materialID);
 
                     AddTri(baseV, new int3(1, 2, 0)); AddTri(baseV, new int3(2, 3, 0));
                     AddTri(baseV, new int3(5, 1, 0)); AddTri(baseV, new int3(4, 5, 0));
@@ -117,12 +117,12 @@ public struct GenerateTerrainMeshJob : IJob
                     break;
 
                 case BlockTopology.SlopeW:
-                    AddVert(new Vector3(1, 0, 0), offset, h, false);
-                    AddVert(new Vector3(1, 0, 1), offset, h, false);
-                    AddVert(new Vector3(0, 0, 1), offset, h, false);
-                    AddVert(new Vector3(0, 0, 0), offset, h, false);
-                    AddVert(new Vector3(0, 1, 0), offset, h, true);
-                    AddVert(new Vector3(0, 1, 1), offset, h, true);
+                    AddVert(new Vector3(1, 0, 0), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(1, 0, 1), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(0, 0, 1), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(0, 0, 0), offset, h, false, subBlock.materialID);
+                    AddVert(new Vector3(0, 1, 0), offset, h, true, subBlock.materialID);
+                    AddVert(new Vector3(0, 1, 1), offset, h, true, subBlock.materialID);
 
                     AddTri(baseV, new int3(1, 2, 0)); AddTri(baseV, new int3(2, 3, 0));
                     AddTri(baseV, new int3(5, 1, 0)); AddTri(baseV, new int3(4, 5, 0));
@@ -133,14 +133,14 @@ public struct GenerateTerrainMeshJob : IJob
         }
     }
 
-    private void AddVert(Vector3 localPos, Vector3 chunkOffset, float heightMod, bool applyHeight)
+    private void AddVert(Vector3 localPos, Vector3 chunkOffset, float heightMod, bool applyHeight, byte matID)
     {
         if (applyHeight)
         {
             localPos.y *= heightMod;
         }
         vertices.Add(localPos + chunkOffset);
-        uvs.Add(Vector2.zero);
+        uvs.Add(new Vector3(0f, 0f, matID));
     }
 
     private void AddTri(int baseIndex, int3 indices)
