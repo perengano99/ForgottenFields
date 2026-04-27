@@ -1,0 +1,12 @@
+{
+    "asset": "87867e9451b75f04d8f2f766ea90f334",
+    "fileName": "019db383-dbd2-79e1-aa89-2b47477ff08c.glb",
+    "prompt": "",
+    "negativePrompt": "",
+    "model": "ad4a4adb-a4bb-4522-952a-13c3f79fa56b",
+    "modelName": "Rodin Hyper 3D Gen2",
+    "customSeed": -1,
+    "w3CTraceId": "5d5db52a48a3785da4fd7fc5b066b387",
+    "feedback": 0,
+    "refinementMode": "Generation"
+}

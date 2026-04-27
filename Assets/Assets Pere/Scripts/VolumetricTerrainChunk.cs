@@ -10,13 +10,21 @@ public struct Triangle {
     public float3 v2;
 }
 
-[RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
+public enum BrushType {
+    SphereAdd,
+    SphereSubtract,
+    Flatten
+}
+
+[ExecuteAlways]
+[RequireComponent(typeof(MeshFilter), typeof(MeshRenderer), typeof(MeshCollider))]
 public class VolumetricTerrainChunk : MonoBehaviour {
     // === MODELO DE DATOS ===
     [SerializeField] private int gridSizeX = 16;
     [SerializeField] private int gridSizeY = 16;
     [SerializeField] private int gridSizeZ = 16;
     [SerializeField] private float voxelSize = 1f;
+    [SerializeField] private bool showDebugNodes = false;
 
     private NativeArray<float> densities;
     private NativeArray<int> metadata;
@@ -27,13 +35,10 @@ public class VolumetricTerrainChunk : MonoBehaviour {
 
     private Mesh chunkMesh;
 
-    public void Start() {
-        Initialize();
-    }
-
-    public void Initialize() {
+    private void OnEnable() {
         if (chunkMesh == null) {
             chunkMesh = new Mesh { name = "VoxelChunk" };
+            chunkMesh.hideFlags = HideFlags.DontSave;
             GetComponent<MeshFilter>().sharedMesh = chunkMesh;
         }
 
@@ -61,7 +66,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
         UpdateMesh();
     }
 
-    private void OnDestroy() {
+    private void OnDisable() {
         if (densities.IsCreated) densities.Dispose();
         if (metadata.IsCreated) metadata.Dispose();
         if (nativeEdgeTable.IsCreated) nativeEdgeTable.Dispose();
@@ -93,6 +98,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
 
         if (chunkMesh == null) {
             chunkMesh = new Mesh { name = "VoxelChunk" };
+            chunkMesh.hideFlags = HideFlags.DontSave;
             GetComponent<MeshFilter>().sharedMesh = chunkMesh;
         }
 
@@ -131,6 +137,58 @@ public class VolumetricTerrainChunk : MonoBehaviour {
         vertices.Dispose();
         indices.Dispose();
         triangleQueue.Dispose();
+
+        GetComponent<MeshCollider>().sharedMesh = chunkMesh;
+    }
+
+    // === CSG (DEFORMACIÓN VOLUMÉTRICA) ===
+    public void ModifyTerrain(Vector3 worldHitPoint, float brushRadius, float brushStrength, BrushType brushType) {
+        if (!densities.IsCreated || voxelSize <= 0f || brushRadius <= 0f) return;
+
+        Vector3 localHitPoint = worldHitPoint - transform.position;
+
+        ModifyTerrainJob job = new ModifyTerrainJob {
+            densities = densities,
+            gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
+            voxelSize = voxelSize,
+            localHitPoint = new float3(localHitPoint.x, localHitPoint.y, localHitPoint.z),
+            radius = brushRadius,
+            strength = brushStrength,
+            brushType = brushType
+        };
+
+        job.Schedule(densities.Length, 64).Complete();
+
+        GravityCheckJob gravityJob = new GravityCheckJob {
+            densities = densities,
+            gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ)
+        };
+
+        gravityJob.Schedule().Complete();
+
+        UpdateMesh();
+    }
+
+    // === VISUALIZACIÓN GIZMOS (SCALAR FIELD) ===
+    private void OnDrawGizmosSelected() {
+        if (!showDebugNodes || !densities.IsCreated) return;
+
+        int pointsX = gridSizeX + 1;
+        int pointsY = gridSizeY + 1;
+
+        for (int z = 0; z <= gridSizeZ; z++) {
+            for (int y = 0; y <= gridSizeY; y++) {
+                for (int x = 0; x <= gridSizeX; x++) {
+                    int index = x + y * pointsX + z * pointsX * pointsY;
+                    float density = densities[index];
+
+                    Gizmos.color = density < 0f ? Color.red : new Color(Color.cyan.r, Color.cyan.g, Color.cyan.b, 0.2f);
+
+                    Vector3 nodePos = transform.position + new Vector3(x, y, z) * voxelSize;
+                    Gizmos.DrawCube(nodePos, Vector3.one * (voxelSize * 0.15f));
+                }
+            }
+        }
     }
 
     [BurstCompile]
@@ -239,6 +297,145 @@ public class VolumetricTerrainChunk : MonoBehaviour {
 
                 triangles.Enqueue(newTriangle);
             }
+        }
+    }
+
+    [BurstCompile]
+    private struct ModifyTerrainJob : IJobParallelFor {
+        public NativeArray<float> densities;
+        public int3 gridSize;
+        public float voxelSize;
+        public float3 localHitPoint;
+        public float radius;
+        public float strength;
+        public BrushType brushType;
+
+        public void Execute(int index) {
+            int pointsX = gridSize.x + 1;
+            int pointsY = gridSize.y + 1;
+            int planeSize = pointsX * pointsY;
+
+            int z = index / planeSize;
+            int rem = index - z * planeSize;
+            int y = rem / pointsX;
+            int x = rem - y * pointsX;
+
+            if (x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
+
+            float3 nodePos = new float3(x, y, z) * voxelSize;
+            float distance = math.distance(nodePos, localHitPoint);
+
+            if (distance > radius) return;
+
+            float falloff = math.smoothstep(radius, 0f, distance);
+
+            switch (brushType) {
+                case BrushType.SphereAdd:
+                    densities[index] -= strength * falloff;
+                    break;
+                case BrushType.SphereSubtract:
+                    densities[index] += strength * falloff;
+                    break;
+                case BrushType.Flatten:
+                    float dy = (y * voxelSize) - localHitPoint.y;
+                    densities[index] = math.lerp(densities[index], dy, strength * falloff);
+                    break;
+            }
+        }
+    }
+
+    [BurstCompile]
+    private struct GravityCheckJob : IJob {
+        public NativeArray<float> densities;
+        public int3 gridSize;
+
+        public void Execute() {
+            int pointsX = gridSize.x + 1;
+            int pointsY = gridSize.y + 1;
+            int planeSize = pointsX * pointsY;
+
+            NativeQueue<int> queue = new NativeQueue<int>(Allocator.Temp);
+            NativeArray<bool> visited = new NativeArray<bool>(densities.Length, Allocator.Temp);
+
+            // === SEMILLAS (BASE Y=0) ===
+            for (int z = 0; z <= gridSize.z; z++) {
+                for (int x = 0; x <= gridSize.x; x++) {
+                    int index = x + z * planeSize;
+                    if (densities[index] >= 0f || visited[index]) continue;
+
+                    visited[index] = true;
+                    queue.Enqueue(index);
+                }
+            }
+
+            // === BFS 6-CONEXIÓN ===
+            while (queue.TryDequeue(out int current)) {
+                int z = current / planeSize;
+                int rem = current - z * planeSize;
+                int y = rem / pointsX;
+                int x = rem - y * pointsX;
+
+                int nx = x + 1;
+                if (nx <= gridSize.x) {
+                    int ni = nx + y * pointsX + z * planeSize;
+                    if (densities[ni] < 0f && !visited[ni]) {
+                        visited[ni] = true;
+                        queue.Enqueue(ni);
+                    }
+                }
+
+                nx = x - 1;
+                if (nx >= 0) {
+                    int ni = nx + y * pointsX + z * planeSize;
+                    if (densities[ni] < 0f && !visited[ni]) {
+                        visited[ni] = true;
+                        queue.Enqueue(ni);
+                    }
+                }
+
+                int ny = y + 1;
+                if (ny <= gridSize.y) {
+                    int ni = x + ny * pointsX + z * planeSize;
+                    if (densities[ni] < 0f && !visited[ni]) {
+                        visited[ni] = true;
+                        queue.Enqueue(ni);
+                    }
+                }
+
+                ny = y - 1;
+                if (ny >= 0) {
+                    int ni = x + ny * pointsX + z * planeSize;
+                    if (densities[ni] < 0f && !visited[ni]) {
+                        visited[ni] = true;
+                        queue.Enqueue(ni);
+                    }
+                }
+
+                int nz = z + 1;
+                if (nz <= gridSize.z) {
+                    int ni = x + y * pointsX + nz * planeSize;
+                    if (densities[ni] < 0f && !visited[ni]) {
+                        visited[ni] = true;
+                        queue.Enqueue(ni);
+                    }
+                }
+
+                nz = z - 1;
+                if (nz >= 0) {
+                    int ni = x + y * pointsX + nz * planeSize;
+                    if (densities[ni] < 0f && !visited[ni]) {
+                        visited[ni] = true;
+                        queue.Enqueue(ni);
+                    }
+                }
+            }
+
+            // === COLAPSO DE MASA FLOTANTE ===
+            for (int i = 0; i < densities.Length; i++)
+                if (densities[i] < 0f && !visited[i]) densities[i] = 1f;
+
+            queue.Dispose();
+            visited.Dispose();
         }
     }
 }
