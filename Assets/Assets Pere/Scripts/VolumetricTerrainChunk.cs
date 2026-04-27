@@ -27,6 +27,10 @@ public class VolumetricTerrainChunk : MonoBehaviour {
 
     private Mesh chunkMesh;
 
+    public void Start() {
+        Initialize();
+    }
+
     public void Initialize() {
         if (chunkMesh == null) {
             chunkMesh = new Mesh { name = "VoxelChunk" };
@@ -114,8 +118,8 @@ public class VolumetricTerrainChunk : MonoBehaviour {
         int vIndex = 0;
         while (triangleQueue.TryDequeue(out Triangle t)) {
             vertices[vIndex] = new Vector3(t.v0.x, t.v0.y, t.v0.z); indices[vIndex] = vIndex++;
-            vertices[vIndex] = new Vector3(t.v1.x, t.v1.y, t.v1.z); indices[vIndex] = vIndex++;
             vertices[vIndex] = new Vector3(t.v2.x, t.v2.y, t.v2.z); indices[vIndex] = vIndex++;
+            vertices[vIndex] = new Vector3(t.v1.x, t.v1.y, t.v1.z); indices[vIndex] = vIndex++;
         }
 
         chunkMesh.Clear();
