@@ -25,6 +25,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     [SerializeField] private int gridSizeZ = 16;
     [SerializeField] private float voxelSize = 1f;
     [SerializeField] private bool showDebugNodes = false;
+    [SerializeField] private bool useStructuralIntegrity = true;
 
     private NativeArray<float> densities;
     private NativeArray<int> metadata;
@@ -159,14 +160,34 @@ public class VolumetricTerrainChunk : MonoBehaviour {
 
         job.Schedule(densities.Length, 64).Complete();
 
-        GravityCheckJob gravityJob = new GravityCheckJob {
-            densities = densities,
-            gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ)
-        };
+        NativeArray<int> labels = default;
+        NativeReference<int> islandCount = default;
 
-        gravityJob.Schedule().Complete();
+        if (useStructuralIntegrity) {
+            labels = new NativeArray<int>(densities.Length, Allocator.TempJob, NativeArrayOptions.ClearMemory);
+            islandCount = new NativeReference<int>(Allocator.TempJob);
+
+            GravityCheckJob gravityJob = new GravityCheckJob {
+                densities = densities,
+                gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
+                labels = labels,
+                islandCount = islandCount
+            };
+
+            gravityJob.Schedule().Complete();
+
+            int foundIslands = islandCount.Value;
+            if (foundIslands > 0) ExtractDebris(labels, foundIslands);
+        }
 
         UpdateMesh();
+
+        if (labels.IsCreated) labels.Dispose();
+        if (islandCount.IsCreated) islandCount.Dispose();
+    }
+
+    private void ExtractDebris(NativeArray<int> labels, int islandCount) {
+        // Note: Rigidbody generation will be handled here
     }
 
     // === VISUALIZACIÓN GIZMOS (SCALAR FIELD) ===
@@ -348,6 +369,8 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     private struct GravityCheckJob : IJob {
         public NativeArray<float> densities;
         public int3 gridSize;
+        public NativeArray<int> labels;
+        public NativeReference<int> islandCount;
 
         public void Execute() {
             int pointsX = gridSize.x + 1;
@@ -355,20 +378,18 @@ public class VolumetricTerrainChunk : MonoBehaviour {
             int planeSize = pointsX * pointsY;
 
             NativeQueue<int> queue = new NativeQueue<int>(Allocator.Temp);
-            NativeArray<bool> visited = new NativeArray<bool>(densities.Length, Allocator.Temp);
 
-            // === SEMILLAS (BASE Y=0) ===
+            // === PASO 1: ANCLAJE (SUELO = 1) ===
             for (int z = 0; z <= gridSize.z; z++) {
                 for (int x = 0; x <= gridSize.x; x++) {
                     int index = x + z * planeSize;
-                    if (densities[index] >= 0f || visited[index]) continue;
+                    if (densities[index] >= 0f || labels[index] != 0) continue;
 
-                    visited[index] = true;
+                    labels[index] = 1;
                     queue.Enqueue(index);
                 }
             }
 
-            // === BFS 6-CONEXIÓN ===
             while (queue.TryDequeue(out int current)) {
                 int z = current / planeSize;
                 int rem = current - z * planeSize;
@@ -378,8 +399,8 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                 int nx = x + 1;
                 if (nx <= gridSize.x) {
                     int ni = nx + y * pointsX + z * planeSize;
-                    if (densities[ni] < 0f && !visited[ni]) {
-                        visited[ni] = true;
+                    if (densities[ni] < 0f && labels[ni] == 0) {
+                        labels[ni] = 1;
                         queue.Enqueue(ni);
                     }
                 }
@@ -387,8 +408,8 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                 nx = x - 1;
                 if (nx >= 0) {
                     int ni = nx + y * pointsX + z * planeSize;
-                    if (densities[ni] < 0f && !visited[ni]) {
-                        visited[ni] = true;
+                    if (densities[ni] < 0f && labels[ni] == 0) {
+                        labels[ni] = 1;
                         queue.Enqueue(ni);
                     }
                 }
@@ -396,8 +417,8 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                 int ny = y + 1;
                 if (ny <= gridSize.y) {
                     int ni = x + ny * pointsX + z * planeSize;
-                    if (densities[ni] < 0f && !visited[ni]) {
-                        visited[ni] = true;
+                    if (densities[ni] < 0f && labels[ni] == 0) {
+                        labels[ni] = 1;
                         queue.Enqueue(ni);
                     }
                 }
@@ -405,8 +426,8 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                 ny = y - 1;
                 if (ny >= 0) {
                     int ni = x + ny * pointsX + z * planeSize;
-                    if (densities[ni] < 0f && !visited[ni]) {
-                        visited[ni] = true;
+                    if (densities[ni] < 0f && labels[ni] == 0) {
+                        labels[ni] = 1;
                         queue.Enqueue(ni);
                     }
                 }
@@ -414,8 +435,8 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                 int nz = z + 1;
                 if (nz <= gridSize.z) {
                     int ni = x + y * pointsX + nz * planeSize;
-                    if (densities[ni] < 0f && !visited[ni]) {
-                        visited[ni] = true;
+                    if (densities[ni] < 0f && labels[ni] == 0) {
+                        labels[ni] = 1;
                         queue.Enqueue(ni);
                     }
                 }
@@ -423,19 +444,93 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                 nz = z - 1;
                 if (nz >= 0) {
                     int ni = x + y * pointsX + nz * planeSize;
-                    if (densities[ni] < 0f && !visited[ni]) {
-                        visited[ni] = true;
+                    if (densities[ni] < 0f && labels[ni] == 0) {
+                        labels[ni] = 1;
                         queue.Enqueue(ni);
                     }
                 }
             }
 
-            // === COLAPSO DE MASA FLOTANTE ===
+            // === PASO 2: DETECCIÓN DE ISLAS (2+) ===
+            int currentIslandID = 2;
+
+            for (int i = 0; i < densities.Length; i++) {
+                if (densities[i] >= 0f || labels[i] != 0) continue;
+
+                labels[i] = currentIslandID;
+                queue.Enqueue(i);
+
+                while (queue.TryDequeue(out int current)) {
+                    int z = current / planeSize;
+                    int rem = current - z * planeSize;
+                    int y = rem / pointsX;
+                    int x = rem - y * pointsX;
+
+                    int nx = x + 1;
+                    if (nx <= gridSize.x) {
+                        int ni = nx + y * pointsX + z * planeSize;
+                        if (densities[ni] < 0f && labels[ni] == 0) {
+                            labels[ni] = currentIslandID;
+                            queue.Enqueue(ni);
+                        }
+                    }
+
+                    nx = x - 1;
+                    if (nx >= 0) {
+                        int ni = nx + y * pointsX + z * planeSize;
+                        if (densities[ni] < 0f && labels[ni] == 0) {
+                            labels[ni] = currentIslandID;
+                            queue.Enqueue(ni);
+                        }
+                    }
+
+                    int ny = y + 1;
+                    if (ny <= gridSize.y) {
+                        int ni = x + ny * pointsX + z * planeSize;
+                        if (densities[ni] < 0f && labels[ni] == 0) {
+                            labels[ni] = currentIslandID;
+                            queue.Enqueue(ni);
+                        }
+                    }
+
+                    ny = y - 1;
+                    if (ny >= 0) {
+                        int ni = x + ny * pointsX + z * planeSize;
+                        if (densities[ni] < 0f && labels[ni] == 0) {
+                            labels[ni] = currentIslandID;
+                            queue.Enqueue(ni);
+                        }
+                    }
+
+                    int nz = z + 1;
+                    if (nz <= gridSize.z) {
+                        int ni = x + y * pointsX + nz * planeSize;
+                        if (densities[ni] < 0f && labels[ni] == 0) {
+                            labels[ni] = currentIslandID;
+                            queue.Enqueue(ni);
+                        }
+                    }
+
+                    nz = z - 1;
+                    if (nz >= 0) {
+                        int ni = x + y * pointsX + nz * planeSize;
+                        if (densities[ni] < 0f && labels[ni] == 0) {
+                            labels[ni] = currentIslandID;
+                            queue.Enqueue(ni);
+                        }
+                    }
+                }
+
+                currentIslandID++;
+            }
+
+            // === PASO 3: LIMPIEZA DE ISLAS FLOTANTES ===
             for (int i = 0; i < densities.Length; i++)
-                if (densities[i] < 0f && !visited[i]) densities[i] = 1f;
+                if (labels[i] >= 2) densities[i] = 1f;
+
+            islandCount.Value = currentIslandID - 1;
 
             queue.Dispose();
-            visited.Dispose();
         }
     }
 }
