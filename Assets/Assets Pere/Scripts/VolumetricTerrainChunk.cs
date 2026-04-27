@@ -8,6 +8,9 @@ public struct Triangle {
     public float3 v0;
     public float3 v1;
     public float3 v2;
+    public float m0;
+    public float m1;
+    public float m2;
 }
 
 public enum BrushType {
@@ -121,22 +124,29 @@ public class VolumetricTerrainChunk : MonoBehaviour {
         int count = triangleQueue.Count;
         NativeArray<Vector3> vertices = new NativeArray<Vector3>(count * 3, Allocator.Temp);
         NativeArray<int> indices = new NativeArray<int>(count * 3, Allocator.Temp);
+        NativeArray<Vector2> uv2 = new NativeArray<Vector2>(count * 3, Allocator.Temp);
 
         int vIndex = 0;
         while (triangleQueue.TryDequeue(out Triangle t)) {
             vertices[vIndex] = new Vector3(t.v0.x, t.v0.y, t.v0.z); indices[vIndex] = vIndex++;
             vertices[vIndex] = new Vector3(t.v2.x, t.v2.y, t.v2.z); indices[vIndex] = vIndex++;
             vertices[vIndex] = new Vector3(t.v1.x, t.v1.y, t.v1.z); indices[vIndex] = vIndex++;
+
+            uv2[vIndex - 3] = new Vector2(t.m0, 0f);
+            uv2[vIndex - 2] = new Vector2(t.m1, 0f);
+            uv2[vIndex - 1] = new Vector2(t.m2, 0f);
         }
 
         chunkMesh.Clear();
         chunkMesh.SetVertices(vertices);
+        chunkMesh.SetUVs(1, uv2);
         chunkMesh.SetIndices(indices, MeshTopology.Triangles, 0);
         chunkMesh.RecalculateNormals();
         chunkMesh.RecalculateBounds();
 
         vertices.Dispose();
         indices.Dispose();
+        uv2.Dispose();
         triangleQueue.Dispose();
 
         GetComponent<MeshCollider>().sharedMesh = chunkMesh;
@@ -162,10 +172,13 @@ public class VolumetricTerrainChunk : MonoBehaviour {
 
         NativeArray<int> labels = default;
         NativeReference<int> islandCount = default;
+        NativeArray<float> preGravityDensities = default;
 
         if (useStructuralIntegrity) {
             labels = new NativeArray<int>(densities.Length, Allocator.TempJob, NativeArrayOptions.ClearMemory);
             islandCount = new NativeReference<int>(Allocator.TempJob);
+            preGravityDensities = new NativeArray<float>(densities.Length, Allocator.TempJob);
+            NativeArray<float>.Copy(densities, preGravityDensities);
 
             GravityCheckJob gravityJob = new GravityCheckJob {
                 densities = densities,
@@ -177,17 +190,86 @@ public class VolumetricTerrainChunk : MonoBehaviour {
             gravityJob.Schedule().Complete();
 
             int foundIslands = islandCount.Value;
-            if (foundIslands > 0) ExtractDebris(labels, foundIslands);
+            if (foundIslands > 0) ExtractDebris(labels, foundIslands, preGravityDensities);
         }
 
         UpdateMesh();
 
         if (labels.IsCreated) labels.Dispose();
         if (islandCount.IsCreated) islandCount.Dispose();
+        if (preGravityDensities.IsCreated) preGravityDensities.Dispose();
     }
 
-    private void ExtractDebris(NativeArray<int> labels, int islandCount) {
-        // Note: Rigidbody generation will be handled here
+    private void ExtractDebris(NativeArray<int> labels, int islandCount, NativeArray<float> sourceDensities) {
+        for (int id = 2; id <= 1 + islandCount; id++) {
+            NativeQueue<Triangle> islandTriangles = new NativeQueue<Triangle>(Allocator.TempJob);
+
+            ExtractIslandJob job = new ExtractIslandJob {
+                labels = labels,
+                metadata = metadata,
+                edgeTable = nativeEdgeTable,
+                triTable = nativeTriTable,
+                originalDensities = sourceDensities,
+                gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
+                voxelSize = voxelSize,
+                targetIslandID = id,
+                triangles = islandTriangles.AsParallelWriter()
+            };
+
+            job.Schedule(labels.Length, 64).Complete();
+
+            if (islandTriangles.Count == 0) {
+                islandTriangles.Dispose();
+                continue;
+            }
+
+            int count = islandTriangles.Count;
+            NativeArray<Vector3> vertices = new NativeArray<Vector3>(count * 3, Allocator.Temp);
+            NativeArray<int> indices = new NativeArray<int>(count * 3, Allocator.Temp);
+            NativeArray<Vector2> uv2 = new NativeArray<Vector2>(count * 3, Allocator.Temp);
+
+            int vIndex = 0;
+            while (islandTriangles.TryDequeue(out Triangle t)) {
+                vertices[vIndex] = new Vector3(t.v0.x, t.v0.y, t.v0.z); indices[vIndex] = vIndex++;
+                vertices[vIndex] = new Vector3(t.v2.x, t.v2.y, t.v2.z); indices[vIndex] = vIndex++;
+                vertices[vIndex] = new Vector3(t.v1.x, t.v1.y, t.v1.z); indices[vIndex] = vIndex++;
+
+                uv2[vIndex - 3] = new Vector2(t.m0, 0f);
+                uv2[vIndex - 2] = new Vector2(t.m1, 0f);
+                uv2[vIndex - 1] = new Vector2(t.m2, 0f);
+            }
+
+            Mesh debrisMesh = new Mesh { name = "DebrisMesh" };
+            debrisMesh.SetVertices(vertices);
+            debrisMesh.SetUVs(1, uv2);
+            debrisMesh.SetIndices(indices, MeshTopology.Triangles, 0);
+            debrisMesh.RecalculateNormals();
+            debrisMesh.RecalculateBounds();
+
+            GameObject debrisObj = new GameObject("Debris_" + id);
+            debrisObj.transform.position = transform.position;
+            debrisObj.tag = "Debris";
+
+            MeshFilter mf = debrisObj.AddComponent<MeshFilter>();
+            mf.sharedMesh = debrisMesh;
+
+            MeshRenderer mr = debrisObj.AddComponent<MeshRenderer>();
+            mr.sharedMaterial = GetComponent<MeshRenderer>().sharedMaterial;
+
+            MeshCollider mc = debrisObj.AddComponent<MeshCollider>();
+            mc.sharedMesh = debrisMesh;
+            mc.convex = true;
+
+            debrisObj.AddComponent<Rigidbody>();
+
+            TerrainDebris script = debrisObj.AddComponent<TerrainDebris>();
+            script.Initialize(this, 1.5f);
+
+            islandTriangles.Dispose();
+            vertices.Dispose();
+            indices.Dispose();
+            uv2.Dispose();
+        }
     }
 
     // === VISUALIZACIÓN GIZMOS (SCALAR FIELD) ===
@@ -315,6 +397,121 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                 newTriangle.v0 = edgeVertices[triIndex];
                 newTriangle.v1 = edgeVertices[i1];
                 newTriangle.v2 = edgeVertices[i2];
+                newTriangle.m0 = metadata[i000];
+                newTriangle.m1 = metadata[i000];
+                newTriangle.m2 = metadata[i000];
+
+                triangles.Enqueue(newTriangle);
+            }
+        }
+    }
+
+    [BurstCompile]
+    private struct ExtractIslandJob : IJobParallelFor {
+        [ReadOnly] public NativeArray<int> labels;
+        [ReadOnly] public NativeArray<int> metadata;
+        [ReadOnly] public NativeArray<int> edgeTable;
+        [ReadOnly] public NativeArray<int> triTable;
+        [ReadOnly] public NativeArray<float> originalDensities;
+
+        public int3 gridSize;
+        public float voxelSize;
+        public int targetIslandID;
+
+        public NativeQueue<Triangle>.ParallelWriter triangles;
+
+        private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
+            float denom = d0 - d1;
+            float t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
+            t = math.clamp(t, 0f, 1f);
+            return math.lerp(p0, p1, t);
+        }
+
+        public void Execute(int index) {
+            int pointsX = gridSize.x + 1;
+            int pointsY = gridSize.y + 1;
+            int planeSize = pointsX * pointsY;
+
+            int z = index / planeSize;
+            int rem = index - z * planeSize;
+            int y = rem / pointsX;
+            int x = rem - y * pointsX;
+
+            if (x >= gridSize.x || y >= gridSize.y || z >= gridSize.z) return;
+
+            int i000 = x + y * pointsX + z * planeSize;
+            int i100 = i000 + 1;
+            int i010 = i000 + pointsX;
+            int i110 = i010 + 1;
+            int i001 = i000 + planeSize;
+            int i101 = i001 + 1;
+            int i011 = i001 + pointsX;
+            int i111 = i011 + 1;
+
+            float d000 = labels[i000] == targetIslandID ? originalDensities[i000] : 1f;
+            float d100 = labels[i100] == targetIslandID ? originalDensities[i100] : 1f;
+            float d010 = labels[i010] == targetIslandID ? originalDensities[i010] : 1f;
+            float d110 = labels[i110] == targetIslandID ? originalDensities[i110] : 1f;
+            float d001 = labels[i001] == targetIslandID ? originalDensities[i001] : 1f;
+            float d101 = labels[i101] == targetIslandID ? originalDensities[i101] : 1f;
+            float d011 = labels[i011] == targetIslandID ? originalDensities[i011] : 1f;
+            float d111 = labels[i111] == targetIslandID ? originalDensities[i111] : 1f;
+
+            int cubeIndex = 0;
+            if (d000 < 0f) cubeIndex |= 1;
+            if (d100 < 0f) cubeIndex |= 2;
+            if (d110 < 0f) cubeIndex |= 4;
+            if (d010 < 0f) cubeIndex |= 8;
+            if (d001 < 0f) cubeIndex |= 16;
+            if (d101 < 0f) cubeIndex |= 32;
+            if (d111 < 0f) cubeIndex |= 64;
+            if (d011 < 0f) cubeIndex |= 128;
+
+            int edgeMask = edgeTable[cubeIndex];
+            if (edgeMask == 0) return;
+
+            float3 basePos = new float3(x, y, z) * voxelSize;
+
+            float3 p000 = basePos;
+            float3 p100 = basePos + new float3(voxelSize, 0f, 0f);
+            float3 p110 = basePos + new float3(voxelSize, voxelSize, 0f);
+            float3 p010 = basePos + new float3(0f, voxelSize, 0f);
+            float3 p001 = basePos + new float3(0f, 0f, voxelSize);
+            float3 p101 = basePos + new float3(voxelSize, 0f, voxelSize);
+            float3 p111 = basePos + new float3(voxelSize, voxelSize, voxelSize);
+            float3 p011 = basePos + new float3(0f, voxelSize, voxelSize);
+
+            FixedList512Bytes<float3> edgeVertices = default;
+            for (int i = 0; i < 12; i++) edgeVertices.Add(float3.zero);
+
+            if ((edgeMask & 1) != 0) edgeVertices[0] = InterpolateIso(p000, p100, d000, d100);
+            if ((edgeMask & 2) != 0) edgeVertices[1] = InterpolateIso(p100, p110, d100, d110);
+            if ((edgeMask & 4) != 0) edgeVertices[2] = InterpolateIso(p110, p010, d110, d010);
+            if ((edgeMask & 8) != 0) edgeVertices[3] = InterpolateIso(p010, p000, d010, d000);
+            if ((edgeMask & 16) != 0) edgeVertices[4] = InterpolateIso(p001, p101, d001, d101);
+            if ((edgeMask & 32) != 0) edgeVertices[5] = InterpolateIso(p101, p111, d101, d111);
+            if ((edgeMask & 64) != 0) edgeVertices[6] = InterpolateIso(p111, p011, d111, d011);
+            if ((edgeMask & 128) != 0) edgeVertices[7] = InterpolateIso(p011, p001, d011, d001);
+            if ((edgeMask & 256) != 0) edgeVertices[8] = InterpolateIso(p000, p001, d000, d001);
+            if ((edgeMask & 512) != 0) edgeVertices[9] = InterpolateIso(p100, p101, d100, d101);
+            if ((edgeMask & 1024) != 0) edgeVertices[10] = InterpolateIso(p110, p111, d110, d111);
+            if ((edgeMask & 2048) != 0) edgeVertices[11] = InterpolateIso(p010, p011, d010, d011);
+
+            int triBase = cubeIndex * 16;
+            for (int i = 0; i < 16; i += 3) {
+                int triIndex = triTable[triBase + i];
+                if (triIndex == -1) break;
+
+                int i1 = triTable[triBase + i + 1];
+                int i2 = triTable[triBase + i + 2];
+
+                Triangle newTriangle;
+                newTriangle.v0 = edgeVertices[triIndex];
+                newTriangle.v1 = edgeVertices[i1];
+                newTriangle.v2 = edgeVertices[i2];
+                newTriangle.m0 = metadata[i000];
+                newTriangle.m1 = metadata[i000];
+                newTriangle.m2 = metadata[i000];
 
                 triangles.Enqueue(newTriangle);
             }
@@ -528,7 +725,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
             for (int i = 0; i < densities.Length; i++)
                 if (labels[i] >= 2) densities[i] = 1f;
 
-            islandCount.Value = currentIslandID - 1;
+            islandCount.Value = currentIslandID - 2;
 
             queue.Dispose();
         }
