@@ -246,6 +246,8 @@ public class VolumetricTerrainChunk : MonoBehaviour {
             debrisMesh.RecalculateNormals();
             debrisMesh.RecalculateBounds();
 
+            float debrisVolume = CalculateMeshVolume(debrisMesh);
+
             GameObject debrisObj = new GameObject("Debris_" + id);
             debrisObj.transform.position = transform.position;
             debrisObj.tag = "Debris";
@@ -263,13 +265,82 @@ public class VolumetricTerrainChunk : MonoBehaviour {
             debrisObj.AddComponent<Rigidbody>();
 
             TerrainDebris script = debrisObj.AddComponent<TerrainDebris>();
-            script.Initialize(this, 1.5f);
+            script.Initialize(this, debrisVolume);
 
             islandTriangles.Dispose();
             vertices.Dispose();
             indices.Dispose();
             uv2.Dispose();
         }
+    }
+
+    private static float CalculateMeshVolume(Mesh mesh) {
+        Vector3[] verts = mesh.vertices;
+        int[] tris = mesh.triangles;
+
+        float volume = 0f;
+        for (int i = 0; i < tris.Length; i += 3) {
+            Vector3 v0 = verts[tris[i]];
+            Vector3 v1 = verts[tris[i + 1]];
+            Vector3 v2 = verts[tris[i + 2]];
+
+            volume += Vector3.Dot(v0, Vector3.Cross(v1, v2)) / 6f;
+        }
+
+        return Mathf.Abs(volume);
+    }
+
+    public void ReintegrateDebris(Collider debrisCollider, float debrisVolume) {
+        if (!densities.IsCreated || debrisCollider == null || voxelSize <= 0f) return;
+
+        Bounds bounds = debrisCollider.bounds;
+
+        Vector3 localMin = bounds.min - transform.position;
+        Vector3 localMax = bounds.max - transform.position;
+
+        int minX = Mathf.Clamp(Mathf.FloorToInt(localMin.x / voxelSize), 0, gridSizeX);
+        int maxX = Mathf.Clamp(Mathf.CeilToInt(localMax.x / voxelSize), 0, gridSizeX);
+        int minY = Mathf.Clamp(Mathf.FloorToInt(localMin.y / voxelSize), 0, gridSizeY);
+        int maxY = Mathf.Clamp(Mathf.CeilToInt(localMax.y / voxelSize), 0, gridSizeY);
+        int minZ = Mathf.Clamp(Mathf.FloorToInt(localMin.z / voxelSize), 0, gridSizeZ);
+        int maxZ = Mathf.Clamp(Mathf.CeilToInt(localMax.z / voxelSize), 0, gridSizeZ);
+
+        int pointsX = gridSizeX + 1;
+        int pointsY = gridSizeY + 1;
+
+        int insideCount = 0;
+        for (int z = minZ; z <= maxZ; z++) {
+            for (int y = minY; y <= maxY; y++) {
+                for (int x = minX; x <= maxX; x++) {
+                    Vector3 worldNode = transform.position + new Vector3(x, y, z) * voxelSize;
+                    Vector3 closest = debrisCollider.ClosestPoint(worldNode);
+                    if ((closest - worldNode).sqrMagnitude > 1e-8f) continue;
+
+                    insideCount++;
+                }
+            }
+        }
+        
+        if (insideCount == 0) return;
+
+        float voxelVolume = voxelSize * voxelSize * voxelSize;
+        float densityDelta = debrisVolume / (insideCount * voxelVolume);
+        if (densityDelta <= 0f) densityDelta = 1f;
+
+        for (int z = minZ; z <= maxZ; z++) {
+            for (int y = minY; y <= maxY; y++) {
+                for (int x = minX; x <= maxX; x++) {
+                    Vector3 worldNode = transform.position + new Vector3(x, y, z) * voxelSize;
+                    Vector3 closest = debrisCollider.ClosestPoint(worldNode);
+                    if ((closest - worldNode).sqrMagnitude > 1e-8f) continue;
+
+                    int index = x + y * pointsX + z * pointsX * pointsY;
+                    densities[index] -= densityDelta;
+                }
+            }
+        }
+
+        UpdateMesh();
     }
 
     // === VISUALIZACIÓN GIZMOS (SCALAR FIELD) ===
