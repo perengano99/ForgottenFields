@@ -50,10 +50,8 @@ public class VolumetricTerrainChunkEditor : Editor {
         // Acceso via reflexión o haciendo el campo interno/público
         if (!Application.isPlaying && script.islandCount.IsCreated) {
             int count = script.islandCount.Value;
-            if (count > 0) {
-                Debug.Log("Debug test");
+            if (count > 0)
                 EditorGUILayout.HelpBox($"ADVERTENCIA: {count} islas flotantes detectadas. Se eliminarán al iniciar el juego.", MessageType.Warning);
-            }
         }
     }
 }

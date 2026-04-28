@@ -50,6 +50,9 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     private int validatedGridSizeZ;
     private float validatedVoxelSize;
 
+    private bool wasPlaying;
+    private float[] editorSnapshotDensities;
+
     private void OnEnable() {
         if (chunkMesh == null) {
             chunkMesh = new Mesh { name = "VoxelChunk" };
@@ -89,10 +92,12 @@ public class VolumetricTerrainChunk : MonoBehaviour {
 
         if (!TryRestoreDensities()) GenerateBasicTerrain();
         UpdateMesh();
+
+        wasPlaying = Application.isPlaying;
     }
 
     private void OnDisable() {
-        SaveDensities();
+        if (Application.isEditor && !Application.isPlaying) SaveDensities();
 
         if (densities.IsCreated) densities.Dispose();
         if (metadata.IsCreated) metadata.Dispose();
@@ -123,12 +128,45 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     }
 
     private void Update() {
+        if (Application.isEditor) {
+            if (!wasPlaying && Application.isPlaying) CaptureEditorSnapshot();
+            if (wasPlaying && !Application.isPlaying) RestoreEditorSnapshot();
+            wasPlaying = Application.isPlaying;
+        }
+
         if (!Application.isEditor || Application.isPlaying) return;
         if (!needsReinitialization) return;
 
         needsReinitialization = false;
         OnDisable();
         OnEnable();
+    }
+
+    private void CaptureEditorSnapshot() {
+        if (!densities.IsCreated) return;
+
+        int len = densities.Length;
+        if (editorSnapshotDensities == null || editorSnapshotDensities.Length != len)
+            editorSnapshotDensities = new float[len];
+
+        for (int i = 0; i < len; i++)
+            editorSnapshotDensities[i] = densities[i];
+    }
+
+    private void RestoreEditorSnapshot() {
+        if (!densities.IsCreated) return;
+        if (editorSnapshotDensities == null || editorSnapshotDensities.Length != densities.Length) return;
+
+        for (int i = 0; i < densities.Length; i++)
+            densities[i] = editorSnapshotDensities[i];
+
+        if (persistedDensities == null || persistedDensities.Length != editorSnapshotDensities.Length)
+            persistedDensities = new float[editorSnapshotDensities.Length];
+
+        for (int i = 0; i < editorSnapshotDensities.Length; i++)
+            persistedDensities[i] = editorSnapshotDensities[i];
+
+        UpdateMesh();
     }
 
     private void SaveDensities() {
@@ -188,7 +226,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                 gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
                 labels = labels,
                 islandCount = islandCount,
-                isPlayMode = false
+                isPlayMode = Application.isPlaying
             };
 
             gravityJob.Schedule().Complete();
