@@ -13,7 +13,7 @@ MonoBehaviour:
   m_Name: Dirt
   m_EditorClassIdentifier: Assembly-CSharp::TerrainMaterial
   materialID: 1
-  materialName: 
+  diffuseTexture: {fileID: 2800000, guid: 040e5bc6316e69b4e8abcd92495e2e85, type: 3}
   isSolid: 1
   canFloat: 0
   isModifiable: 1

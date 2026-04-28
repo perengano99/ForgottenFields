@@ -9,6 +9,7 @@ public struct VoxelMaterialData {
 [CreateAssetMenu(fileName = "NewTerrainMaterial", menuName = "Terrain/Material")]
 public class TerrainMaterial : ScriptableObject {
     public byte materialID;
+    public Texture2D diffuseTexture;
     public bool isSolid = true;
     public bool canFloat = false;
     public bool isModifiable = true;

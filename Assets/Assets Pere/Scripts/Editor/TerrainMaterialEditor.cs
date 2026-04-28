@@ -15,6 +15,7 @@ public class TerrainMaterialEditor : Editor {
         EditorGUILayout.PropertyField(serializedObject.FindProperty("isSolid"));
         EditorGUILayout.PropertyField(serializedObject.FindProperty("canFloat"));
         EditorGUILayout.PropertyField(serializedObject.FindProperty("isModifiable"));
+        EditorGUILayout.PropertyField(serializedObject.FindProperty("diffuseTexture"));
 
         serializedObject.ApplyModifiedProperties();
 
