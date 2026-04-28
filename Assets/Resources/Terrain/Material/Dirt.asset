@@ -12,9 +12,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 474cc78b0e8335349b9b2fcdfec84047, type: 3}
   m_Name: Dirt
   m_EditorClassIdentifier: Assembly-CSharp::TerrainMaterial
-  materialID: 0
+  materialID: 1
   materialName: 
   isSolid: 1
   canFloat: 0
   isModifiable: 1
-  packedPhysicsFlags: 0
+  packedPhysicsFlags: 5

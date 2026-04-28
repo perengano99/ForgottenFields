@@ -53,7 +53,26 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     private bool wasPlaying;
     private float[] editorSnapshotDensities;
 
+    // === VERIFICACIÓN DE DEPENDENCIA ===
+    private bool EnsureRegistryIsReady() {
+        if (MaterialRegistry.Instance == null) {
+            MaterialRegistry registry = Object.FindAnyObjectByType<MaterialRegistry>();
+            if (registry == null) {
+                Debug.LogWarning("MaterialRegistry no encontrado en la escena. Pausando generación del Chunk.");
+                return false;
+            }
+
+            registry.InitializeIfNeeded();
+            if (MaterialRegistry.Instance == null)
+                return false;
+        } else MaterialRegistry.Instance.InitializeIfNeeded();
+
+        return MaterialRegistry.Instance.RegistryData.IsCreated;
+    }
+
     private void OnEnable() {
+        if (!EnsureRegistryIsReady()) return;
+
         if (chunkMesh == null) {
             chunkMesh = new Mesh { name = "VoxelChunk" };
             chunkMesh.hideFlags = HideFlags.DontSave;
@@ -128,6 +147,8 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     }
 
     private void Update() {
+        if (!EnsureRegistryIsReady()) return;
+
         if (Application.isEditor) {
             if (!wasPlaying && Application.isPlaying) CaptureEditorSnapshot();
             if (wasPlaying && !Application.isPlaying) RestoreEditorSnapshot();
@@ -213,6 +234,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
 
     // === ORQUESTACIÓN Y MALLA ===
     public void UpdateMesh() {
+        if (!EnsureRegistryIsReady()) return;
         if (!densities.IsCreated || !metadata.IsCreated || !nativeEdgeTable.IsCreated || !nativeTriTable.IsCreated) return;
 
         if (chunkMesh == null) {

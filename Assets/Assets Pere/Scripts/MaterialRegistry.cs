@@ -1,47 +1,41 @@
 using Unity.Collections;
 using UnityEngine;
 
+[ExecuteAlways]
 public class MaterialRegistry : MonoBehaviour {
     public static MaterialRegistry Instance { get; private set; }
 
-    private NativeArray<VoxelMaterialData> _registryData;
-    public NativeArray<VoxelMaterialData> RegistryData => _registryData;
+    private NativeArray<VoxelMaterialData> registryData;
+    public NativeArray<VoxelMaterialData> RegistryData => registryData;
 
-    private void Awake() {
-        Debug.Log("Initializing MaterialRegistry...");
-        if (Instance != null && Instance != this) {
-            Destroy(gameObject);
-            Debug.LogWarning("Multiple instances of MaterialRegistry detected. Destroying duplicate.");
-            return;
-        }
+    private void OnEnable() {
+        if (Instance == null) Instance = this;
+        else if (Instance != this) return;
 
-        Instance = this;
+        InitializeIfNeeded();
+    }
+
+    // === INICIALIZACIÓN SEGURA ===
+    public void InitializeIfNeeded() {
+        if (registryData.IsCreated) return;
 
         TerrainMaterial[] materials = Resources.LoadAll<TerrainMaterial>("Terrain/Material");
 
-        if (_registryData.IsCreated) _registryData.Dispose();
-        _registryData = new NativeArray<VoxelMaterialData>(256, Allocator.Persistent);
+        registryData = new NativeArray<VoxelMaterialData>(256, Allocator.Persistent);
 
         for (int i = 0; i < materials.Length; i++) {
             TerrainMaterial material = materials[i];
 
             VoxelMaterialData data;
             data.id = material.materialID;
-            byte flags = 0;
-            if (material.isSolid) flags |= 1;
-            if (material.canFloat) flags |= 2;
-            if (material.isModifiable) flags |= 4;
-            data.physicsFlags = flags;
+            data.physicsFlags = material.packedPhysicsFlags;
 
-            _registryData[material.materialID] = data;
+            registryData[material.materialID] = data;
         }
     }
 
-    private void OnDestroy() {
-        if (Instance == this)
-            Instance = null;
-
-        if (_registryData.IsCreated)
-            _registryData.Dispose();
+    private void OnDisable() {
+        if (Instance == this) Instance = null;
+        if (registryData.IsCreated) registryData.Dispose();
     }
 }
