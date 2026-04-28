@@ -31,7 +31,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     [SerializeField] private bool useStructuralIntegrity = true;
 
     private NativeArray<float> densities;
-    private NativeArray<int> metadata;
+    private NativeArray<byte> metadata;
     private NativeArray<int> labels;
     public NativeReference<int> islandCount;
 
@@ -70,7 +70,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
         if (nativeTriTable.IsCreated) nativeTriTable.Dispose();
 
         densities = new NativeArray<float>(pointCount, Allocator.Persistent);
-        metadata = new NativeArray<int>(pointCount, Allocator.Persistent);
+        metadata = new NativeArray<byte>(pointCount, Allocator.Persistent);
         labels = new NativeArray<int>(pointCount, Allocator.Persistent);
         islandCount = new NativeReference<int>(Allocator.Persistent);
 
@@ -202,7 +202,10 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                 for (int x = 0; x <= gridSizeX; x++) {
                     int index = x + y * pointsX + z * pointsX * pointsY;
                     float height = 5f + Mathf.PerlinNoise(x * 0.1f, z * 0.1f) * 3f;
-                    densities[index] = (y * voxelSize) - height;
+                    float density = (y * voxelSize) - height;
+
+                    densities[index] = density;
+                    metadata[index] = (byte)(density < 0f ? 1 : 0);
                 }
             }
         }
@@ -265,8 +268,8 @@ public class VolumetricTerrainChunk : MonoBehaviour {
 
         chunkMesh.Clear();
         chunkMesh.SetVertices(vertices);
-        chunkMesh.SetUVs(1, uv2);
         chunkMesh.SetIndices(indices, MeshTopology.Triangles, 0);
+        chunkMesh.SetUVs(1, uv2);
         chunkMesh.RecalculateNormals();
         chunkMesh.RecalculateBounds();
 
@@ -360,7 +363,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     [BurstCompile]
     private struct MarchingCubesJob : IJobParallelFor {
         [ReadOnly] public NativeArray<float> densities;
-        [ReadOnly] public NativeArray<int> metadata;
+        [ReadOnly] public NativeArray<byte> metadata;
         [ReadOnly] public NativeArray<int> edgeTable;
         [ReadOnly] public NativeArray<int> triTable;
 
@@ -396,6 +399,8 @@ public class VolumetricTerrainChunk : MonoBehaviour {
             int i101 = i001 + 1;
             int i011 = i001 + pointsX;
             int i111 = i011 + 1;
+
+            byte matID = metadata[i000];
 
             float d000 = densities[i000];
             float d100 = densities[i100];
@@ -460,9 +465,9 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                 newTriangle.v0 = edgeVertices[triIndex];
                 newTriangle.v1 = edgeVertices[i1];
                 newTriangle.v2 = edgeVertices[i2];
-                newTriangle.m0 = metadata[i000];
-                newTriangle.m1 = metadata[i000];
-                newTriangle.m2 = metadata[i000];
+                newTriangle.m0 = matID;
+                newTriangle.m1 = matID;
+                newTriangle.m2 = matID;
 
                 triangles.Enqueue(newTriangle);
             }
