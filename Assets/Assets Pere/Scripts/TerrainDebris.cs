@@ -16,10 +16,20 @@ public class TerrainDebris : MonoBehaviour {
         if (collision.gameObject.CompareTag("Debris")) return;
         if (originChunk == null) return;
 
-        MeshCollider mc = GetComponent<MeshCollider>();
-        if (mc == null || mc.sharedMesh == null) return;
+        MeshFilter meshFilter = GetComponent<MeshFilter>();
+        if (meshFilter == null || meshFilter.sharedMesh == null) return;
 
-        originChunk.ReintegrateDebris(mc, debrisVolume * debrisStrength);
+
+
+        // === CÁLCULO DE BOUNDS Y OBB ===
+        Vector3 extents = meshFilter.sharedMesh.bounds.extents;
+        Vector3 worldCenter = transform.TransformPoint(meshFilter.sharedMesh.bounds.center);
+        worldCenter += Vector3.down * 0.5f;
+
+        // === DESPACHO CSG ===
+        float maxRadius = extents.magnitude + 1.5f;
+        originChunk.ModifyTerrain(worldCenter, maxRadius, 1f, BrushType.BoxAdd, extents, transform.rotation);
+
         Destroy(gameObject);
     }
 }

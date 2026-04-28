@@ -16,7 +16,8 @@ public struct Triangle {
 public enum BrushType {
     SphereAdd,
     SphereSubtract,
-    Flatten
+    Flatten,
+    BoxAdd
 }
 
 [ExecuteAlways]
@@ -32,6 +33,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
 
     private NativeArray<float> densities;
     private NativeArray<int> metadata;
+    private NativeArray<int> labels;
 
     // === VARIABLES DE TABLA ===
     private NativeArray<int> nativeEdgeTable;
@@ -50,11 +52,13 @@ public class VolumetricTerrainChunk : MonoBehaviour {
 
         if (densities.IsCreated) densities.Dispose();
         if (metadata.IsCreated) metadata.Dispose();
+        if (labels.IsCreated) labels.Dispose();
         if (nativeEdgeTable.IsCreated) nativeEdgeTable.Dispose();
         if (nativeTriTable.IsCreated) nativeTriTable.Dispose();
 
         densities = new NativeArray<float>(pointCount, Allocator.Persistent);
         metadata = new NativeArray<int>(pointCount, Allocator.Persistent);
+        labels = new NativeArray<int>(pointCount, Allocator.Persistent);
 
         nativeEdgeTable = new NativeArray<int>(256, Allocator.Persistent);
         nativeTriTable = new NativeArray<int>(256 * 16, Allocator.Persistent);
@@ -73,6 +77,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     private void OnDisable() {
         if (densities.IsCreated) densities.Dispose();
         if (metadata.IsCreated) metadata.Dispose();
+        if (labels.IsCreated) labels.Dispose();
         if (nativeEdgeTable.IsCreated) nativeEdgeTable.Dispose();
         if (nativeTriTable.IsCreated) nativeTriTable.Dispose();
         if (chunkMesh != null) DestroyImmediate(chunkMesh);
@@ -153,7 +158,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     }
 
     // === CSG (DEFORMACIÓN VOLUMÉTRICA) ===
-    public void ModifyTerrain(Vector3 worldHitPoint, float brushRadius, float brushStrength, BrushType brushType) {
+    public void ModifyTerrain(Vector3 worldHitPoint, float brushRadius, float brushStrength, BrushType brushType, Vector3 boxExtents = default, Quaternion boxRot = default) {
         if (!densities.IsCreated || voxelSize <= 0f || brushRadius <= 0f) return;
 
         Vector3 localHitPoint = worldHitPoint - transform.position;
@@ -165,183 +170,38 @@ public class VolumetricTerrainChunk : MonoBehaviour {
             localHitPoint = new float3(localHitPoint.x, localHitPoint.y, localHitPoint.z),
             radius = brushRadius,
             strength = brushStrength,
-            brushType = brushType
+            brushType = brushType,
+            boxExtents = new float3(boxExtents.x, boxExtents.y, boxExtents.z),
+            inverseRotation = math.inverse(new quaternion(boxRot.x, boxRot.y, boxRot.z, boxRot.w))
         };
 
         job.Schedule(densities.Length, 64).Complete();
 
-        NativeArray<int> labels = default;
         NativeReference<int> islandCount = default;
-        NativeArray<float> preGravityDensities = default;
 
         if (useStructuralIntegrity) {
-            labels = new NativeArray<int>(densities.Length, Allocator.TempJob, NativeArrayOptions.ClearMemory);
             islandCount = new NativeReference<int>(Allocator.TempJob);
-            preGravityDensities = new NativeArray<float>(densities.Length, Allocator.TempJob);
-            NativeArray<float>.Copy(densities, preGravityDensities);
+            for (int i = 0; i < labels.Length; i++) labels[i] = 0;
 
             GravityCheckJob gravityJob = new GravityCheckJob {
                 densities = densities,
                 gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
                 labels = labels,
-                islandCount = islandCount
+                islandCount = islandCount,
+                collapseIslands = Application.isPlaying
             };
 
             gravityJob.Schedule().Complete();
-
-            int foundIslands = islandCount.Value;
-            if (foundIslands > 0) ExtractDebris(labels, foundIslands, preGravityDensities);
         }
 
         UpdateMesh();
 
-        if (labels.IsCreated) labels.Dispose();
         if (islandCount.IsCreated) islandCount.Dispose();
-        if (preGravityDensities.IsCreated) preGravityDensities.Dispose();
     }
 
-    private void ExtractDebris(NativeArray<int> labels, int islandCount, NativeArray<float> sourceDensities) {
-        for (int id = 2; id <= 1 + islandCount; id++) {
-            NativeQueue<Triangle> islandTriangles = new NativeQueue<Triangle>(Allocator.TempJob);
-
-            ExtractIslandJob job = new ExtractIslandJob {
-                labels = labels,
-                metadata = metadata,
-                edgeTable = nativeEdgeTable,
-                triTable = nativeTriTable,
-                originalDensities = sourceDensities,
-                gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
-                voxelSize = voxelSize,
-                targetIslandID = id,
-                triangles = islandTriangles.AsParallelWriter()
-            };
-
-            job.Schedule(labels.Length, 64).Complete();
-
-            if (islandTriangles.Count == 0) {
-                islandTriangles.Dispose();
-                continue;
-            }
-
-            int count = islandTriangles.Count;
-            NativeArray<Vector3> vertices = new NativeArray<Vector3>(count * 3, Allocator.Temp);
-            NativeArray<int> indices = new NativeArray<int>(count * 3, Allocator.Temp);
-            NativeArray<Vector2> uv2 = new NativeArray<Vector2>(count * 3, Allocator.Temp);
-
-            int vIndex = 0;
-            while (islandTriangles.TryDequeue(out Triangle t)) {
-                vertices[vIndex] = new Vector3(t.v0.x, t.v0.y, t.v0.z); indices[vIndex] = vIndex++;
-                vertices[vIndex] = new Vector3(t.v2.x, t.v2.y, t.v2.z); indices[vIndex] = vIndex++;
-                vertices[vIndex] = new Vector3(t.v1.x, t.v1.y, t.v1.z); indices[vIndex] = vIndex++;
-
-                uv2[vIndex - 3] = new Vector2(t.m0, 0f);
-                uv2[vIndex - 2] = new Vector2(t.m1, 0f);
-                uv2[vIndex - 1] = new Vector2(t.m2, 0f);
-            }
-
-            Mesh debrisMesh = new Mesh { name = "DebrisMesh" };
-            debrisMesh.SetVertices(vertices);
-            debrisMesh.SetUVs(1, uv2);
-            debrisMesh.SetIndices(indices, MeshTopology.Triangles, 0);
-            debrisMesh.RecalculateNormals();
-            debrisMesh.RecalculateBounds();
-
-            float debrisVolume = CalculateMeshVolume(debrisMesh);
-
-            GameObject debrisObj = new GameObject("Debris_" + id);
-            debrisObj.transform.position = transform.position;
-            debrisObj.tag = "Debris";
-
-            MeshFilter mf = debrisObj.AddComponent<MeshFilter>();
-            mf.sharedMesh = debrisMesh;
-
-            MeshRenderer mr = debrisObj.AddComponent<MeshRenderer>();
-            mr.sharedMaterial = GetComponent<MeshRenderer>().sharedMaterial;
-
-            MeshCollider mc = debrisObj.AddComponent<MeshCollider>();
-            mc.sharedMesh = debrisMesh;
-            mc.convex = true;
-
-            debrisObj.AddComponent<Rigidbody>();
-
-            TerrainDebris script = debrisObj.AddComponent<TerrainDebris>();
-            script.Initialize(this, debrisVolume);
-
-            islandTriangles.Dispose();
-            vertices.Dispose();
-            indices.Dispose();
-            uv2.Dispose();
-        }
-    }
-
-    private static float CalculateMeshVolume(Mesh mesh) {
-        Vector3[] verts = mesh.vertices;
-        int[] tris = mesh.triangles;
-
-        float volume = 0f;
-        for (int i = 0; i < tris.Length; i += 3) {
-            Vector3 v0 = verts[tris[i]];
-            Vector3 v1 = verts[tris[i + 1]];
-            Vector3 v2 = verts[tris[i + 2]];
-
-            volume += Vector3.Dot(v0, Vector3.Cross(v1, v2)) / 6f;
-        }
-
-        return Mathf.Abs(volume);
-    }
-
-    public void ReintegrateDebris(Collider debrisCollider, float debrisVolume) {
-        if (!densities.IsCreated || debrisCollider == null || voxelSize <= 0f) return;
-
-        Bounds bounds = debrisCollider.bounds;
-
-        Vector3 localMin = bounds.min - transform.position;
-        Vector3 localMax = bounds.max - transform.position;
-
-        int minX = Mathf.Clamp(Mathf.FloorToInt(localMin.x / voxelSize), 0, gridSizeX);
-        int maxX = Mathf.Clamp(Mathf.CeilToInt(localMax.x / voxelSize), 0, gridSizeX);
-        int minY = Mathf.Clamp(Mathf.FloorToInt(localMin.y / voxelSize), 0, gridSizeY);
-        int maxY = Mathf.Clamp(Mathf.CeilToInt(localMax.y / voxelSize), 0, gridSizeY);
-        int minZ = Mathf.Clamp(Mathf.FloorToInt(localMin.z / voxelSize), 0, gridSizeZ);
-        int maxZ = Mathf.Clamp(Mathf.CeilToInt(localMax.z / voxelSize), 0, gridSizeZ);
-
-        int pointsX = gridSizeX + 1;
-        int pointsY = gridSizeY + 1;
-
-        int insideCount = 0;
-        for (int z = minZ; z <= maxZ; z++) {
-            for (int y = minY; y <= maxY; y++) {
-                for (int x = minX; x <= maxX; x++) {
-                    Vector3 worldNode = transform.position + new Vector3(x, y, z) * voxelSize;
-                    Vector3 closest = debrisCollider.ClosestPoint(worldNode);
-                    if ((closest - worldNode).sqrMagnitude > 1e-8f) continue;
-
-                    insideCount++;
-                }
-            }
-        }
-        
-        if (insideCount == 0) return;
-
-        float voxelVolume = voxelSize * voxelSize * voxelSize;
-        float densityDelta = debrisVolume / (insideCount * voxelVolume);
-        if (densityDelta <= 0f) densityDelta = 1f;
-
-        for (int z = minZ; z <= maxZ; z++) {
-            for (int y = minY; y <= maxY; y++) {
-                for (int x = minX; x <= maxX; x++) {
-                    Vector3 worldNode = transform.position + new Vector3(x, y, z) * voxelSize;
-                    Vector3 closest = debrisCollider.ClosestPoint(worldNode);
-                    if ((closest - worldNode).sqrMagnitude > 1e-8f) continue;
-
-                    int index = x + y * pointsX + z * pointsX * pointsY;
-                    densities[index] -= densityDelta;
-                }
-            }
-        }
-
-        UpdateMesh();
-    }
+    // === NOTA DE ARQUITECTURA ===
+    // Mecánicas de Debris e incorporación por aplastamiento (BoxAdd) eliminadas.
+    // PENDIENTE: Implementar Shading de partículas con gravedad para desprendimientos de masa (vfx_shading_particles).
 
     // === VISUALIZACIÓN GIZMOS (SCALAR FIELD) ===
     private void OnDrawGizmosSelected() {
@@ -356,7 +216,9 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                     int index = x + y * pointsX + z * pointsX * pointsY;
                     float density = densities[index];
 
-                    Gizmos.color = density < 0f ? Color.red : new Color(Color.cyan.r, Color.cyan.g, Color.cyan.b, 0.2f);
+                    if (labels.IsCreated && !Application.isPlaying && labels[index] >= 2)
+                        Gizmos.color = Color.magenta;
+                    else Gizmos.color = density < 0f ? Color.red : new Color(Color.cyan.r, Color.cyan.g, Color.cyan.b, 0.2f);
 
                     Vector3 nodePos = transform.position + new Vector3(x, y, z) * voxelSize;
                     Gizmos.DrawCube(nodePos, Vector3.one * (voxelSize * 0.15f));
@@ -598,6 +460,8 @@ public class VolumetricTerrainChunk : MonoBehaviour {
         public float radius;
         public float strength;
         public BrushType brushType;
+        public float3 boxExtents;
+        public quaternion inverseRotation;
 
         public void Execute(int index) {
             int pointsX = gridSize.x + 1;
@@ -612,8 +476,19 @@ public class VolumetricTerrainChunk : MonoBehaviour {
             if (x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
 
             float3 nodePos = new float3(x, y, z) * voxelSize;
-            float distance = math.distance(nodePos, localHitPoint);
 
+            if (brushType == BrushType.BoxAdd) {
+                float3 diff = nodePos - localHitPoint;
+                float3 rotatedPos = math.mul(inverseRotation, diff);
+
+                float3 d = math.abs(rotatedPos) - boxExtents;
+                float dist = math.length(math.max(d, 0f)) + math.min(math.cmax(d), 0f);
+
+                densities[index] = math.min(densities[index], dist - 0.1f);
+                return;
+            }
+
+            float distance = math.distance(nodePos, localHitPoint);
             if (distance > radius) return;
 
             float falloff = math.smoothstep(radius, 0f, distance);
@@ -639,6 +514,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
         public int3 gridSize;
         public NativeArray<int> labels;
         public NativeReference<int> islandCount;
+        public bool collapseIslands;
 
         public void Execute() {
             int pointsX = gridSize.x + 1;
@@ -794,7 +670,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
 
             // === PASO 3: LIMPIEZA DE ISLAS FLOTANTES ===
             for (int i = 0; i < densities.Length; i++)
-                if (labels[i] >= 2) densities[i] = 1f;
+                if (labels[i] >= 2 && collapseIslands) densities[i] = 1f;
 
             islandCount.Value = currentIslandID - 2;
 
