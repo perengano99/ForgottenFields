@@ -42,4 +42,18 @@ public class VolumetricTerrainChunkEditor : Editor {
         if (currentEvent.type == EventType.MouseUp && currentEvent.button == 0 && GUIUtility.hotControl != 0)
             GUIUtility.hotControl = 0;
     }
+
+    public override void OnInspectorGUI() {
+        base.OnInspectorGUI();
+        VolumetricTerrainChunk script = (VolumetricTerrainChunk)target;
+
+        // Acceso via reflexión o haciendo el campo interno/público
+        if (!Application.isPlaying && script.islandCount.IsCreated) {
+            int count = script.islandCount.Value;
+            if (count > 0) {
+                Debug.Log("Debug test");
+                EditorGUILayout.HelpBox($"ADVERTENCIA: {count} islas flotantes detectadas. Se eliminarán al iniciar el juego.", MessageType.Warning);
+            }
+        }
+    }
 }
