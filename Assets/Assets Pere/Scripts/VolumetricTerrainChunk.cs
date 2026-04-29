@@ -241,10 +241,6 @@ public class VolumetricTerrainChunk : MonoBehaviour {
         }
     }
 
-    // TODO: LA MALLA DE AJEDREZ SE LIMITA A CIERTA ALTURA.
-    // AÑADIR BOTON DE APPLY O SIMILAR PARA LA REDIMENSION DEL CHUNK.
-    // ESTILIZAR Y COMPLEMENTAR EL INSPECTOR PARA MEJOR EDICION (PINCELES, PINTADO DE MATERIAL, FORMAS, SUAVISADO APARTE DEL APLANADO, ETC)
-
     // === ORQUESTACIÓN Y MALLA ===
     public void UpdateMesh() {
         if (!EnsureRegistryIsReady()) return;
@@ -336,19 +332,21 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     }
 
     // === CSG (DEFORMACIÓN VOLUMÉTRICA) ===
-    public void ModifyTerrain(Vector3 worldHitPoint, float brushRadius, float brushStrength, BrushType brushType) {
+    public void ModifyTerrain(Vector3 worldHitPoint, float brushRadius, float brushStrength, BrushType brushType, byte materialID = 0) {
         if (!densities.IsCreated || voxelSize <= 0f || brushRadius <= 0f) return;
 
         Vector3 localHitPoint = worldHitPoint - transform.position;
 
         ModifyTerrainJob job = new ModifyTerrainJob {
             densities = densities,
+            metadata = metadata,
             gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
             voxelSize = voxelSize,
             localHitPoint = new float3(localHitPoint.x, localHitPoint.y, localHitPoint.z),
             radius = brushRadius,
             strength = brushStrength,
-            brushType = brushType
+            brushType = brushType,
+            brushMaterialID = materialID
         };
 
         job.Schedule(densities.Length, 64).Complete();
@@ -529,12 +527,14 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     [BurstCompile]
     private struct ModifyTerrainJob : IJobParallelFor {
         public NativeArray<float> densities;
+        public NativeArray<byte> metadata;
         public int3 gridSize;
         public float voxelSize;
         public float3 localHitPoint;
         public float radius;
         public float strength;
         public BrushType brushType;
+        public byte brushMaterialID;
 
         public void Execute(int index) {
             int pointsX = gridSize.x + 1;
@@ -557,6 +557,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
             switch (brushType) {
                 case BrushType.SphereAdd:
                     densities[index] -= strength * falloff;
+                    if (densities[index] < 0f) metadata[index] = brushMaterialID;
                     break;
                 case BrushType.SphereSubtract:
                     densities[index] += strength * falloff;
@@ -564,6 +565,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                 case BrushType.Flatten:
                     float dy = (y * voxelSize) - localHitPoint.y;
                     densities[index] = math.lerp(densities[index], dy, strength * falloff);
+                    if (densities[index] < 0f) metadata[index] = brushMaterialID;
                     break;
             }
         }

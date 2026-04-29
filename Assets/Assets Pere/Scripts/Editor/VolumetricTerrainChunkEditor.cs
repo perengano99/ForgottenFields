@@ -6,6 +6,9 @@ public class VolumetricTerrainChunkEditor : Editor {
     private const float BrushRadius = 3f;
     private const float BrushStrength = 0.5f;
 
+    // === SELECCIÓN DE MATERIAL ===
+    private TerrainMaterial selectedMaterial;
+
     private void OnSceneGUI() {
         if (Event.current.type == EventType.MouseMove)
             SceneView.RepaintAll();
@@ -34,7 +37,8 @@ public class VolumetricTerrainChunkEditor : Editor {
                 else if (currentEvent.shift) brushType = BrushType.SphereSubtract;
                 else brushType = BrushType.SphereAdd;
 
-                targetChunk.ModifyTerrain(hit.point, BrushRadius, BrushStrength, brushType);
+                byte matID = selectedMaterial != null ? selectedMaterial.materialID : (byte)0;
+                targetChunk.ModifyTerrain(hit.point, BrushRadius, BrushStrength, brushType, matID);
                 currentEvent.Use();
             }
         }
@@ -47,7 +51,12 @@ public class VolumetricTerrainChunkEditor : Editor {
         base.OnInspectorGUI();
         VolumetricTerrainChunk script = (VolumetricTerrainChunk)target;
 
-        // Acceso via reflexión o haciendo el campo interno/público
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("// === PINCEL DE MATERIAL ===", EditorStyles.boldLabel);
+        selectedMaterial = (TerrainMaterial)EditorGUILayout.ObjectField("Material activo", selectedMaterial, typeof(TerrainMaterial), false);
+        if (selectedMaterial != null)
+            EditorGUILayout.LabelField($"ID: {selectedMaterial.materialID}", EditorStyles.miniLabel);
+
         if (!Application.isPlaying && script.islandCount.IsCreated) {
             int count = script.islandCount.Value;
             if (count > 0)
