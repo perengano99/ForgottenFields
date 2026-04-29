@@ -1,8 +1,8 @@
 using UnityEditor;
 using UnityEngine;
 
-[CustomEditor(typeof(VolumetricTerrainChunk))]
-public class VolumetricTerrainChunkEditor : Editor {
+[CustomEditor(typeof(TerrainChunk))]
+public class TerrainChunkEditor : Editor {
     private const float BrushRadius = 3f;
     private const float BrushStrength = 0.5f;
 
@@ -13,7 +13,7 @@ public class VolumetricTerrainChunkEditor : Editor {
         if (Event.current.type == EventType.MouseMove)
             SceneView.RepaintAll();
 
-        VolumetricTerrainChunk targetChunk = (VolumetricTerrainChunk)target;
+        TerrainChunk targetChunk = (TerrainChunk)target;
         Event currentEvent = Event.current;
 
         Ray ray = HandleUtility.GUIPointToWorldRay(currentEvent.mousePosition);
@@ -38,7 +38,7 @@ public class VolumetricTerrainChunkEditor : Editor {
                 else brushType = BrushType.SphereAdd;
 
                 byte matID = selectedMaterial != null ? selectedMaterial.materialID : (byte)0;
-                targetChunk.ModifyTerrain(hit.point, BrushRadius, BrushStrength, brushType, matID);
+                //targetChunk.ModifyTerrain(hit.point, BrushRadius, BrushStrength, brushType, matID);
                 currentEvent.Use();
             }
         }
@@ -49,7 +49,7 @@ public class VolumetricTerrainChunkEditor : Editor {
 
     public override void OnInspectorGUI() {
         base.OnInspectorGUI();
-        VolumetricTerrainChunk script = (VolumetricTerrainChunk)target;
+        TerrainChunk script = (TerrainChunk)target;
 
         EditorGUILayout.Space();
         EditorGUILayout.LabelField("// === PINCEL DE MATERIAL ===", EditorStyles.boldLabel);

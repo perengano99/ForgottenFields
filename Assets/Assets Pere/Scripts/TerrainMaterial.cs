@@ -3,7 +3,7 @@ using UnityEngine;
 public struct VoxelMaterialData {
     public byte id;
     public byte physicsFlags; // Bits: 1=Solid, 2=CanFloat, 4=Modifiable
-    // TODO: textureIndex y otros metadatos se añadirán después.
+    // TODO: textureIndex y otros metadatos se añadirá después.
 }
 
 [CreateAssetMenu(fileName = "NewTerrainMaterial", menuName = "Terrain/Material")]
@@ -13,6 +13,9 @@ public class TerrainMaterial : ScriptableObject {
     public bool isSolid = true;
     public bool canFloat = false;
     public bool isModifiable = true;
+    [Tooltip("Si es false, este material caerá si no está conectado al suelo.")] public bool isStructural = true;
+    [Tooltip("Permite definir si esta textura se proyectará predominantemente en caras verticales (ej. roca) o planas (ej. pasto).")]
+    [Range(0f, 1f)] public float verticalProjectionBias = 0.5f;
     [HideInInspector] public byte packedPhysicsFlags;
 
     private bool idConflict = false;

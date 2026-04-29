@@ -13,6 +13,9 @@ public class MaterialRegistry : MonoBehaviour {
     private Texture2DArray textureArray;
     public Texture2DArray SplatTextureArray => textureArray;
 
+    private bool[] structuralFlags = new bool[256];
+    private float[] verticalBiases = new float[256];
+
     private void OnEnable() {
         if (Instance == null) Instance = this;
         else if (Instance != this) return;
@@ -27,6 +30,13 @@ public class MaterialRegistry : MonoBehaviour {
         TerrainMaterial[] materials = Resources.LoadAll<TerrainMaterial>("Terrain/Material");
 
         registryData = new NativeArray<VoxelMaterialData>(256, Allocator.Persistent);
+        structuralFlags = new bool[256];
+        verticalBiases = new float[256];
+
+        for (int i = 0; i < 256; i++) {
+            structuralFlags[i] = true;
+            verticalBiases[i] = 0.5f;
+        }
 
         textureArray = new Texture2DArray(textureResolution, textureResolution, 256, TextureFormat.RGBA32, false);
         textureArray.filterMode = FilterMode.Point;
@@ -40,6 +50,8 @@ public class MaterialRegistry : MonoBehaviour {
             data.physicsFlags = material.packedPhysicsFlags;
 
             registryData[material.materialID] = data;
+            structuralFlags[material.materialID] = material.isStructural;
+            verticalBiases[material.materialID] = material.verticalProjectionBias;
 
             if (material.diffuseTexture != null) {
                 bool validResolution = material.diffuseTexture.width == textureResolution && material.diffuseTexture.height == textureResolution;
@@ -54,6 +66,10 @@ public class MaterialRegistry : MonoBehaviour {
 
         Shader.SetGlobalTexture("_TerrainSplatArray", textureArray);
     }
+
+    // === CONSULTAS POR ID ===
+    public bool IsStructural(byte id) => structuralFlags[id];
+    public float GetVerticalBias(byte id) => verticalBiases[id];
 
     private void OnDisable() {
         if (Instance == this) Instance = null;

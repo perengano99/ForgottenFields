@@ -21,14 +21,13 @@ public enum BrushType {
 
 [ExecuteAlways]
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer), typeof(MeshCollider))]
-public class VolumetricTerrainChunk : MonoBehaviour {
+public class TerrainChunk : MonoBehaviour {
     // === MODELO DE DATOS ===
     [SerializeField] private int gridSizeX = 16;
     [SerializeField] private int gridSizeY = 16;
     [SerializeField] private int gridSizeZ = 16;
     [SerializeField] private float voxelSize = 1f;
     [SerializeField] private bool showDebugNodes = false;
-    [SerializeField] private bool useStructuralIntegrity = true;
 
     private MaterialPropertyBlock propBlock;
 
@@ -37,7 +36,9 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     private NativeArray<int> labels;
     public NativeReference<int> islandCount;
 
-    
+    // === ACCESO EXTERNO A DATOS ===
+    public NativeArray<float> Densities => densities;
+    public NativeArray<byte> Metadata => metadata;
 
     [SerializeField, HideInInspector] private float[] persistedDensities;
 
@@ -223,21 +224,9 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     public void GenerateBasicTerrain() {
         if (!densities.IsCreated) return;
 
-        int pointsX = gridSizeX + 1;
-        int pointsY = gridSizeY + 1;
-
-        for (int z = 0; z <= gridSizeZ; z++) {
-            for (int y = 0; y <= gridSizeY; y++) {
-                for (int x = 0; x <= gridSizeX; x++) {
-                    int index = x + y * pointsX + z * pointsX * pointsY;
-                    float height = 5f + Mathf.PerlinNoise(x * 0.1f, z * 0.1f) * 3f;
-                    float density = (y * voxelSize) - height;
-
-                    densities[index] = density;
-                    byte matID = (byte)(((x + z) % 2 == 0) ? 1 : 2);
-                    metadata[index] = (byte)(density < 0f ? matID : 0);
-                }
-            }
+        for (int i = 0; i < densities.Length; i++) {
+            densities[i] = -1f;
+            metadata[i] = 0;
         }
     }
 
@@ -250,20 +239,6 @@ public class VolumetricTerrainChunk : MonoBehaviour {
             chunkMesh = new Mesh { name = "VoxelChunk" };
             chunkMesh.hideFlags = HideFlags.DontSave;
             GetComponent<MeshFilter>().sharedMesh = chunkMesh;
-        }
-
-        if (useStructuralIntegrity && labels.IsCreated && islandCount.IsCreated) {
-            for (int i = 0; i < labels.Length; i++) labels[i] = 0;
-
-            GravityCheckJob gravityJob = new GravityCheckJob {
-                densities = densities,
-                gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
-                labels = labels,
-                islandCount = islandCount,
-                isPlayMode = Application.isPlaying
-            };
-
-            gravityJob.Schedule().Complete();
         }
 
         NativeQueue<Triangle> triangleQueue = new NativeQueue<Triangle>(Allocator.TempJob);
@@ -331,43 +306,76 @@ public class VolumetricTerrainChunk : MonoBehaviour {
         }
     }
 
-    // === CSG (DEFORMACIÓN VOLUMÉTRICA) ===
-    public void ModifyTerrain(Vector3 worldHitPoint, float brushRadius, float brushStrength, BrushType brushType, byte materialID = 0) {
-        if (!densities.IsCreated || voxelSize <= 0f || brushRadius <= 0f) return;
+    // === CSG (DEFORMACIÓN VOLUMÉTRICA) — GESTIONADO EXTERNAMENTE ===
+    // public void ModifyTerrain(Vector3 worldHitPoint, float brushRadius, float brushStrength, BrushType brushType, byte materialID = 0) {
+    //     if (!densities.IsCreated || voxelSize <= 0f || brushRadius <= 0f) return;
+    //     Vector3 localHitPoint = worldHitPoint - transform.position;
+    //     ModifyTerrainJob job = new ModifyTerrainJob {
+    //         densities = densities,
+    //         metadata = metadata,
+    //         gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
+    //         voxelSize = voxelSize,
+    //         localHitPoint = new float3(localHitPoint.x, localHitPoint.y, localHitPoint.z),
+    //         radius = brushRadius,
+    //         strength = brushStrength,
+    //         brushType = brushType,
+    //         brushMaterialID = materialID
+    //     };
+    //     job.Schedule(densities.Length, 64).Complete();
+    //     if (labels.IsCreated && islandCount.IsCreated) {
+    //         for (int i = 0; i < labels.Length; i++) labels[i] = 0;
+    //         GravityCheckJob gravityJob = new GravityCheckJob {
+    //             densities = densities,
+    //             gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
+    //             labels = labels,
+    //             islandCount = islandCount,
+    //             isPlayMode = Application.isPlaying
+    //         };
+    //         gravityJob.Schedule().Complete();
+    //     }
+    //     UpdateMesh();
+    // }
 
-        Vector3 localHitPoint = worldHitPoint - transform.position;
-
-        ModifyTerrainJob job = new ModifyTerrainJob {
-            densities = densities,
-            metadata = metadata,
-            gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
-            voxelSize = voxelSize,
-            localHitPoint = new float3(localHitPoint.x, localHitPoint.y, localHitPoint.z),
-            radius = brushRadius,
-            strength = brushStrength,
-            brushType = brushType,
-            brushMaterialID = materialID
-        };
-
-        job.Schedule(densities.Length, 64).Complete();
-
-        if (useStructuralIntegrity && labels.IsCreated && islandCount.IsCreated) {
-            for (int i = 0; i < labels.Length; i++) labels[i] = 0;
-
-            GravityCheckJob gravityJob = new GravityCheckJob {
-                densities = densities,
-                gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
-                labels = labels,
-                islandCount = islandCount,
-                isPlayMode = Application.isPlaying
-            };
-
-            gravityJob.Schedule().Complete();
-        }
-
-        UpdateMesh();
-    }
-
+    // [BurstCompile]
+    // private struct ModifyTerrainJob : IJobParallelFor {
+    //     public NativeArray<float> densities;
+    //     public NativeArray<byte> metadata;
+    //     public int3 gridSize;
+    //     public float voxelSize;
+    //     public float3 localHitPoint;
+    //     public float radius;
+    //     public float strength;
+    //     public BrushType brushType;
+    //     public byte brushMaterialID;
+    //     public void Execute(int index) {
+    //         int pointsX = gridSize.x + 1;
+    //         int pointsY = gridSize.y + 1;
+    //         int planeSize = pointsX * pointsY;
+    //         int z = index / planeSize;
+    //         int rem = index - z * planeSize;
+    //         int y = rem / pointsX;
+    //         int x = rem - y * pointsX;
+    //         if (x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
+    //         float3 nodePos = new float3(x, y, z) * voxelSize;
+    //         float distance = math.distance(nodePos, localHitPoint);
+    //         if (distance > radius) return;
+    //         float falloff = math.smoothstep(radius, 0f, distance);
+    //         switch (brushType) {
+    //             case BrushType.SphereAdd:
+    //                 densities[index] -= strength * falloff;
+    //                 if (densities[index] < 0f) metadata[index] = brushMaterialID;
+    //                 break;
+    //             case BrushType.SphereSubtract:
+    //                 densities[index] += strength * falloff;
+    //                 break;
+    //             case BrushType.Flatten:
+    //                 float dy = (y * voxelSize) - localHitPoint.y;
+    //                 densities[index] = math.lerp(densities[index], dy, strength * falloff);
+    //                 if (densities[index] < 0f) metadata[index] = brushMaterialID;
+    //                 break;
+    //         }
+    //     }
+    // }
     // === NOTA DE ARQUITECTURA ===
     // Nota: Mecánicas de debris y aplastamiento removidas por diseño.
     // Pendiente: Implementar shading de partículas (vfx_shading_particles) para desprendimiento visual.
@@ -375,20 +383,6 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     // === VISUALIZACIÓN GIZMOS (SCALAR FIELD) ===
     private void OnDrawGizmosSelected() {
         if (!showDebugNodes || !densities.IsCreated) return;
-
-        if (useStructuralIntegrity && labels.IsCreated && islandCount.IsCreated) {
-            for (int i = 0; i < labels.Length; i++) labels[i] = 0;
-
-            GravityCheckJob gravityJob = new GravityCheckJob {
-                densities = densities,
-                gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
-                labels = labels,
-                islandCount = islandCount,
-                isPlayMode = false
-            };
-
-            gravityJob.Schedule().Complete();
-        }
 
         int pointsX = gridSizeX + 1;
         int pointsY = gridSizeY + 1;
@@ -520,53 +514,6 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                 newTriangle.m2 = matID;
 
                 triangles.Enqueue(newTriangle);
-            }
-        }
-    }
-
-    [BurstCompile]
-    private struct ModifyTerrainJob : IJobParallelFor {
-        public NativeArray<float> densities;
-        public NativeArray<byte> metadata;
-        public int3 gridSize;
-        public float voxelSize;
-        public float3 localHitPoint;
-        public float radius;
-        public float strength;
-        public BrushType brushType;
-        public byte brushMaterialID;
-
-        public void Execute(int index) {
-            int pointsX = gridSize.x + 1;
-            int pointsY = gridSize.y + 1;
-            int planeSize = pointsX * pointsY;
-
-            int z = index / planeSize;
-            int rem = index - z * planeSize;
-            int y = rem / pointsX;
-            int x = rem - y * pointsX;
-
-            if (x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
-
-            float3 nodePos = new float3(x, y, z) * voxelSize;
-            float distance = math.distance(nodePos, localHitPoint);
-            if (distance > radius) return;
-
-            float falloff = math.smoothstep(radius, 0f, distance);
-
-            switch (brushType) {
-                case BrushType.SphereAdd:
-                    densities[index] -= strength * falloff;
-                    if (densities[index] < 0f) metadata[index] = brushMaterialID;
-                    break;
-                case BrushType.SphereSubtract:
-                    densities[index] += strength * falloff;
-                    break;
-                case BrushType.Flatten:
-                    float dy = (y * voxelSize) - localHitPoint.y;
-                    densities[index] = math.lerp(densities[index], dy, strength * falloff);
-                    if (densities[index] < 0f) metadata[index] = brushMaterialID;
-                    break;
             }
         }
     }
