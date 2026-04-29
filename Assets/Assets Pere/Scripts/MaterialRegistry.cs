@@ -11,6 +11,7 @@ public class MaterialRegistry : MonoBehaviour {
     public NativeArray<VoxelMaterialData> RegistryData => registryData;
 
     private Texture2DArray textureArray;
+    public Texture2DArray SplatTextureArray => textureArray;
 
     private void OnEnable() {
         if (Instance == null) Instance = this;

@@ -30,10 +30,14 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     [SerializeField] private bool showDebugNodes = false;
     [SerializeField] private bool useStructuralIntegrity = true;
 
+    private MaterialPropertyBlock propBlock;
+
     private NativeArray<float> densities;
     private NativeArray<byte> metadata;
     private NativeArray<int> labels;
     public NativeReference<int> islandCount;
+
+    
 
     [SerializeField, HideInInspector] private float[] persistedDensities;
 
@@ -49,6 +53,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     private int validatedGridSizeY;
     private int validatedGridSizeZ;
     private float validatedVoxelSize;
+    private bool isInitialized = false;
 
     private bool wasPlaying;
     private float[] editorSnapshotDensities;
@@ -113,6 +118,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
         UpdateMesh();
 
         wasPlaying = Application.isPlaying;
+        isInitialized = true;
     }
 
     private void OnDisable() {
@@ -125,6 +131,7 @@ public class VolumetricTerrainChunk : MonoBehaviour {
         if (nativeEdgeTable.IsCreated) nativeEdgeTable.Dispose();
         if (nativeTriTable.IsCreated) nativeTriTable.Dispose();
         if (chunkMesh != null) DestroyImmediate(chunkMesh);
+        isInitialized = false;
     }
 
     private void OnValidate() {
@@ -149,19 +156,20 @@ public class VolumetricTerrainChunk : MonoBehaviour {
     private void Update() {
         if (!EnsureRegistryIsReady()) return;
 
-        if (Application.isEditor) {
-            if (!wasPlaying && Application.isPlaying) CaptureEditorSnapshot();
-            if (wasPlaying && !Application.isPlaying) RestoreEditorSnapshot();
-            wasPlaying = Application.isPlaying;
+        if (!isInitialized || needsReinitialization) {
+            OnDisable();
+            OnEnable();
+            needsReinitialization = false;
         }
-
-        if (!Application.isEditor || Application.isPlaying) return;
-        if (!needsReinitialization) return;
-
-        needsReinitialization = false;
-        OnDisable();
-        OnEnable();
-    }
+ 
+         if (Application.isEditor) {
+             if (!wasPlaying && Application.isPlaying) CaptureEditorSnapshot();
+             if (wasPlaying && !Application.isPlaying) RestoreEditorSnapshot();
+             wasPlaying = Application.isPlaying;
+         }
+ 
+         if (!Application.isEditor || Application.isPlaying) return;
+     }
 
     private void CaptureEditorSnapshot() {
         if (!densities.IsCreated) return;
@@ -226,11 +234,16 @@ public class VolumetricTerrainChunk : MonoBehaviour {
                     float density = (y * voxelSize) - height;
 
                     densities[index] = density;
-                    metadata[index] = (byte)(density < 0f ? 1 : 0);
+                    byte matID = (byte)(((x + z) % 2 == 0) ? 1 : 2);
+                    metadata[index] = (byte)(density < 0f ? matID : 0);
                 }
             }
         }
     }
+
+    // TODO: LA MALLA DE AJEDREZ SE LIMITA A CIERTA ALTURA.
+    // AÑADIR BOTON DE APPLY O SIMILAR PARA LA REDIMENSION DEL CHUNK.
+    // ESTILIZAR Y COMPLEMENTAR EL INSPECTOR PARA MEJOR EDICION (PINCELES, PINTADO DE MATERIAL, FORMAS, SUAVISADO APARTE DEL APLANADO, ETC)
 
     // === ORQUESTACIÓN Y MALLA ===
     public void UpdateMesh() {
@@ -288,6 +301,15 @@ public class VolumetricTerrainChunk : MonoBehaviour {
             uv2[vIndex - 1] = new Vector2(t.m2, 0f);
         }
 
+        if (chunkMesh == null) {
+            chunkMesh = new Mesh { name = "VoxelChunk" };
+            chunkMesh.hideFlags = HideFlags.DontSave;
+        }
+
+        GetComponent<MeshFilter>().sharedMesh = chunkMesh;
+        MeshCollider mc = GetComponent<MeshCollider>();
+        if (mc != null) mc.sharedMesh = chunkMesh;
+
         chunkMesh.Clear();
         chunkMesh.SetVertices(vertices);
         chunkMesh.SetIndices(indices, MeshTopology.Triangles, 0);
@@ -303,6 +325,14 @@ public class VolumetricTerrainChunk : MonoBehaviour {
         GetComponent<MeshCollider>().sharedMesh = chunkMesh;
 
         if (Application.isEditor && !Application.isPlaying) SaveDensities();
+
+        MeshRenderer renderer = GetComponent<MeshRenderer>();
+        if (renderer != null && MaterialRegistry.Instance != null && MaterialRegistry.Instance.SplatTextureArray != null) {
+            if (propBlock == null) propBlock = new MaterialPropertyBlock();
+            renderer.GetPropertyBlock(propBlock);
+            propBlock.SetTexture("_TerrainSplatArray", MaterialRegistry.Instance.SplatTextureArray);
+            renderer.SetPropertyBlock(propBlock);
+        }
     }
 
     // === CSG (DEFORMACIÓN VOLUMÉTRICA) ===
