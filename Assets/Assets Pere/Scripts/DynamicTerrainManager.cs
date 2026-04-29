@@ -60,6 +60,8 @@ public class DynamicTerrainManager : MonoBehaviour {
                     go.AddComponent<MeshCollider>();
 
                     TerrainChunk chunk = go.AddComponent<TerrainChunk>();
+                    chunk.GenerateBasicTerrain();
+                    chunk.UpdateMesh();
                     chunks[x, y, z] = chunk;
                 }
             }

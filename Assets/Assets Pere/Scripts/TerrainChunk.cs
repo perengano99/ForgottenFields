@@ -4,6 +4,13 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 
+// TODO: Las brochas no funcionan bien. Primeramente, deberian existir dos tipos de brocha: Editar terreno y pintar terreno (pintar es establecer material).
+// Además, la aplicación de brochas debería ser un proceso separado que modifique el campo escalar y luego ejecute un job de actualización de malla, en lugar de intentar modificar la malla directamente desde el job de brocha.
+// Los tipos de brocha no funcionan como se espera. la funcion Vertical, debe jalar desde la base del terreno hacia arriba o abajo, impidiendo que queden "flotando" bloques en el aire. Actualmente, la brocha es una esfera que modifica el terreno de forma uniforme, lo que no es ideal para crear paredes verticales o suelos planos. Se necesita implementar una lógica de brocha que considere la dirección y la forma del terreno para aplicar modificaciones más precisas y controladas.
+// Faltan shapes de brocha como box, irregular plane (extrulla de a manera de accidente natural como una montaña o cerro en lugar de una figura geometrica regular), actualmente el modo ruido crea literalmente ruido.
+// La fuerza de la brocha no se aplica de manera efectiva, es muy fuerte y sensible. Ademas, es muy suave y debe mantenerse el aspecto low poly.
+// El modo extraccion, subtraccion, suavizado y aplanado no deben ser modos seleccionables en inspector, sino combinaciones del teclado + lmb. Por ejemplo, Shift + LMB para aplanar, Ctrl + LMB para suavizar, Alt + LMB para subtraccion, y sin modificadores para extraccion. Esto permitirá una edición más fluida y rápida sin necesidad de cambiar constantemente entre modos en el inspector.
+
 public struct Triangle {
     public float3 v0;
     public float3 v1;
@@ -45,6 +52,11 @@ public class TerrainChunk : MonoBehaviour {
     // === VARIABLES DE TABLA ===
     private NativeArray<int> nativeEdgeTable;
     private NativeArray<int> nativeTriTable;
+
+    // === BUFFERS DE MALLA ===
+    private NativeList<Vector3> meshVertices;
+    private NativeList<int> meshTriangles;
+    private NativeList<Vector2> meshUVs;
 
     private Mesh chunkMesh;
 
@@ -93,6 +105,9 @@ public class TerrainChunk : MonoBehaviour {
         if (islandCount.IsCreated) islandCount.Dispose();
         if (nativeEdgeTable.IsCreated) nativeEdgeTable.Dispose();
         if (nativeTriTable.IsCreated) nativeTriTable.Dispose();
+        if (meshVertices.IsCreated) meshVertices.Dispose();
+        if (meshTriangles.IsCreated) meshTriangles.Dispose();
+        if (meshUVs.IsCreated) meshUVs.Dispose();
 
         densities = new NativeArray<float>(pointCount, Allocator.Persistent);
         metadata = new NativeArray<byte>(pointCount, Allocator.Persistent);
@@ -101,6 +116,10 @@ public class TerrainChunk : MonoBehaviour {
 
         nativeEdgeTable = new NativeArray<int>(256, Allocator.Persistent);
         nativeTriTable = new NativeArray<int>(256 * 16, Allocator.Persistent);
+
+        meshVertices = new NativeList<Vector3>(Allocator.Persistent);
+        meshTriangles = new NativeList<int>(Allocator.Persistent);
+        meshUVs = new NativeList<Vector2>(Allocator.Persistent);
 
         for (int i = 0; i < 256; i++)
             nativeEdgeTable[i] = MarchingCubesTables.EdgeTable[i];
@@ -131,8 +150,17 @@ public class TerrainChunk : MonoBehaviour {
         if (islandCount.IsCreated) islandCount.Dispose();
         if (nativeEdgeTable.IsCreated) nativeEdgeTable.Dispose();
         if (nativeTriTable.IsCreated) nativeTriTable.Dispose();
+        if (meshVertices.IsCreated) meshVertices.Dispose();
+        if (meshTriangles.IsCreated) meshTriangles.Dispose();
+        if (meshUVs.IsCreated) meshUVs.Dispose();
         if (chunkMesh != null) DestroyImmediate(chunkMesh);
         isInitialized = false;
+    }
+
+    private void OnDestroy() {
+        if (meshVertices.IsCreated) meshVertices.Dispose();
+        if (meshTriangles.IsCreated) meshTriangles.Dispose();
+        if (meshUVs.IsCreated) meshUVs.Dispose();
     }
 
     private void OnValidate() {
@@ -224,9 +252,18 @@ public class TerrainChunk : MonoBehaviour {
     public void GenerateBasicTerrain() {
         if (!densities.IsCreated) return;
 
-        for (int i = 0; i < densities.Length; i++) {
-            densities[i] = -1f;
-            metadata[i] = 0;
+        int pointsX = gridSizeX + 1;
+        int pointsY = gridSizeY + 1;
+        float surfaceHeight = (gridSizeY / 2f) * voxelSize;
+
+        for (int z = 0; z <= gridSizeZ; z++) {
+            for (int y = 0; y <= gridSizeY; y++) {
+                for (int x = 0; x <= gridSizeX; x++) {
+                    int index = x + y * pointsX + z * pointsX * pointsY;
+                    densities[index] = y * voxelSize - surfaceHeight;
+                    metadata[index] = 0;
+                }
+            }
         }
     }
 
@@ -234,15 +271,19 @@ public class TerrainChunk : MonoBehaviour {
     public void UpdateMesh() {
         if (!EnsureRegistryIsReady()) return;
         if (!densities.IsCreated || !metadata.IsCreated || !nativeEdgeTable.IsCreated || !nativeTriTable.IsCreated) return;
+        if (!meshVertices.IsCreated || !meshTriangles.IsCreated || !meshUVs.IsCreated) return;
 
         if (chunkMesh == null) {
             chunkMesh = new Mesh { name = "VoxelChunk" };
             chunkMesh.hideFlags = HideFlags.DontSave;
-            GetComponent<MeshFilter>().sharedMesh = chunkMesh;
         }
 
-        NativeQueue<Triangle> triangleQueue = new NativeQueue<Triangle>(Allocator.TempJob);
+        // === LIMPIAR BUFFERS ===
+        meshVertices.Clear();
+        meshTriangles.Clear();
+        meshUVs.Clear();
 
+        // === CONFIGURAR Y EJECUTAR JOB ===
         MarchingCubesJob job = new MarchingCubesJob {
             densities = densities,
             metadata = metadata,
@@ -250,64 +291,35 @@ public class TerrainChunk : MonoBehaviour {
             triTable = nativeTriTable,
             gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
             voxelSize = voxelSize,
-            triangles = triangleQueue.AsParallelWriter()
+            outVertices = meshVertices,
+            outTriangles = meshTriangles,
+            outUVs = meshUVs
         };
 
-        JobHandle handle = job.Schedule(densities.Length, 64);
-        handle.Complete();
+        job.Schedule().Complete();
 
-        int count = triangleQueue.Count;
-        NativeArray<Vector3> vertices = new NativeArray<Vector3>(count * 3, Allocator.Temp);
-        NativeArray<int> indices = new NativeArray<int>(count * 3, Allocator.Temp);
-        NativeArray<Vector2> uv2 = new NativeArray<Vector2>(count * 3, Allocator.Temp);
-
-        int vIndex = 0;
-        while (triangleQueue.TryDequeue(out Triangle t)) {
-            vertices[vIndex] = new Vector3(t.v0.x, t.v0.y, t.v0.z); indices[vIndex] = vIndex++;
-            vertices[vIndex] = new Vector3(t.v2.x, t.v2.y, t.v2.z); indices[vIndex] = vIndex++;
-            vertices[vIndex] = new Vector3(t.v1.x, t.v1.y, t.v1.z); indices[vIndex] = vIndex++;
-
-            uv2[vIndex - 3] = new Vector2(t.m0, 0f);
-            uv2[vIndex - 2] = new Vector2(t.m1, 0f);
-            uv2[vIndex - 1] = new Vector2(t.m2, 0f);
-        }
-
-        if (chunkMesh == null) {
-            chunkMesh = new Mesh { name = "VoxelChunk" };
-            chunkMesh.hideFlags = HideFlags.DontSave;
-        }
+        // === VOLCAR A MESH ===
+        chunkMesh.Clear();
+        chunkMesh.SetVertices(meshVertices.AsArray());
+        chunkMesh.SetIndices(meshTriangles.AsArray(), MeshTopology.Triangles, 0);
+        chunkMesh.SetUVs(1, meshUVs.AsArray());
+        chunkMesh.RecalculateNormals();
+        chunkMesh.RecalculateBounds();
 
         GetComponent<MeshFilter>().sharedMesh = chunkMesh;
         MeshCollider mc = GetComponent<MeshCollider>();
         if (mc != null) mc.sharedMesh = chunkMesh;
 
-        chunkMesh.Clear();
-        chunkMesh.SetVertices(vertices);
-        chunkMesh.SetIndices(indices, MeshTopology.Triangles, 0);
-        chunkMesh.SetUVs(1, uv2);
-        chunkMesh.RecalculateNormals();
-        chunkMesh.RecalculateBounds();
-
-        vertices.Dispose();
-        indices.Dispose();
-        uv2.Dispose();
-        triangleQueue.Dispose();
-
-        GetComponent<MeshCollider>().sharedMesh = chunkMesh;
-
         if (Application.isEditor && !Application.isPlaying) SaveDensities();
 
         MeshRenderer renderer = GetComponent<MeshRenderer>();
-        if (renderer != null) {
-            if (MaterialRegistry.Instance != null && MaterialRegistry.Instance.SplatTextureArray != null) {
-                if (propBlock == null) propBlock = new MaterialPropertyBlock();
-                renderer.GetPropertyBlock(propBlock);
-                propBlock.SetTexture("_TerrainSplatArray", MaterialRegistry.Instance.SplatTextureArray);
-                renderer.SetPropertyBlock(propBlock);
-            }
+        if (renderer != null && MaterialRegistry.Instance != null && MaterialRegistry.Instance.SplatTextureArray != null) {
+            if (propBlock == null) propBlock = new MaterialPropertyBlock();
+            renderer.GetPropertyBlock(propBlock);
+            propBlock.SetTexture("_TerrainSplatArray", MaterialRegistry.Instance.SplatTextureArray);
+            renderer.SetPropertyBlock(propBlock);
         }
     }
-
     // === CSG (DEFORMACIÓN VOLUMÉTRICA) — GESTIONADO EXTERNAMENTE ===
     // public void ModifyTerrain(Vector3 worldHitPoint, float brushRadius, float brushStrength, BrushType brushType, byte materialID = 0) {
     //     if (!densities.IsCreated || voxelSize <= 0f || brushRadius <= 0f) return;
@@ -407,7 +419,7 @@ public class TerrainChunk : MonoBehaviour {
     }
 
     [BurstCompile]
-    private struct MarchingCubesJob : IJobParallelFor {
+    private struct MarchingCubesJob : IJob {
         [ReadOnly] public NativeArray<float> densities;
         [ReadOnly] public NativeArray<byte> metadata;
         [ReadOnly] public NativeArray<int> edgeTable;
@@ -416,7 +428,9 @@ public class TerrainChunk : MonoBehaviour {
         public int3 gridSize;
         public float voxelSize;
 
-        public NativeQueue<Triangle>.ParallelWriter triangles;
+        public NativeList<Vector3> outVertices;
+        public NativeList<int> outTriangles;
+        public NativeList<Vector2> outUVs;
 
         private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
             float denom = d0 - d1;
@@ -425,97 +439,103 @@ public class TerrainChunk : MonoBehaviour {
             return math.lerp(p0, p1, t);
         }
 
-        public void Execute(int index) {
+        public void Execute() {
             int pointsX = gridSize.x + 1;
             int pointsY = gridSize.y + 1;
             int planeSize = pointsX * pointsY;
 
-            int z = index / planeSize;
-            int rem = index - z * planeSize;
-            int y = rem / pointsX;
-            int x = rem - y * pointsX;
+            for (int index = 0; index < densities.Length; index++) {
+                int z = index / planeSize;
+                int rem = index - z * planeSize;
+                int y = rem / pointsX;
+                int x = rem - y * pointsX;
 
-            if (x >= gridSize.x || y >= gridSize.y || z >= gridSize.z) return;
+                if (x >= gridSize.x || y >= gridSize.y || z >= gridSize.z) continue;
 
-            int i000 = x + y * pointsX + z * planeSize;
-            int i100 = i000 + 1;
-            int i010 = i000 + pointsX;
-            int i110 = i010 + 1;
-            int i001 = i000 + planeSize;
-            int i101 = i001 + 1;
-            int i011 = i001 + pointsX;
-            int i111 = i011 + 1;
+                int i000 = x + y * pointsX + z * planeSize;
+                int i100 = i000 + 1;
+                int i010 = i000 + pointsX;
+                int i110 = i010 + 1;
+                int i001 = i000 + planeSize;
+                int i101 = i001 + 1;
+                int i011 = i001 + pointsX;
+                int i111 = i011 + 1;
 
-            byte matID = metadata[i000];
+                byte matID = metadata[i000];
 
-            float d000 = densities[i000];
-            float d100 = densities[i100];
-            float d010 = densities[i010];
-            float d110 = densities[i110];
-            float d001 = densities[i001];
-            float d101 = densities[i101];
-            float d011 = densities[i011];
-            float d111 = densities[i111];
+                float d000 = densities[i000];
+                float d100 = densities[i100];
+                float d010 = densities[i010];
+                float d110 = densities[i110];
+                float d001 = densities[i001];
+                float d101 = densities[i101];
+                float d011 = densities[i011];
+                float d111 = densities[i111];
 
-            int cubeIndex = 0;
-            if (d000 < 0f) cubeIndex |= 1;
-            if (d100 < 0f) cubeIndex |= 2;
-            if (d110 < 0f) cubeIndex |= 4;
-            if (d010 < 0f) cubeIndex |= 8;
-            if (d001 < 0f) cubeIndex |= 16;
-            if (d101 < 0f) cubeIndex |= 32;
-            if (d111 < 0f) cubeIndex |= 64;
-            if (d011 < 0f) cubeIndex |= 128;
+                int cubeIndex = 0;
+                if (d000 < 0f) cubeIndex |= 1;
+                if (d100 < 0f) cubeIndex |= 2;
+                if (d110 < 0f) cubeIndex |= 4;
+                if (d010 < 0f) cubeIndex |= 8;
+                if (d001 < 0f) cubeIndex |= 16;
+                if (d101 < 0f) cubeIndex |= 32;
+                if (d111 < 0f) cubeIndex |= 64;
+                if (d011 < 0f) cubeIndex |= 128;
 
-            int edgeMask = edgeTable[cubeIndex];
-            if (edgeMask == 0) return;
+                int edgeMask = edgeTable[cubeIndex];
+                if (edgeMask == 0) continue;
 
-            // === INTERPOLACIÓN DE VÉRTICES ===
-            float3 basePos = new float3(x, y, z) * voxelSize;
+                // === INTERPOLACIÓN DE VÉRTICES ===
+                float3 basePos = new float3(x, y, z) * voxelSize;
 
-            float3 p000 = basePos;
-            float3 p100 = basePos + new float3(voxelSize, 0f, 0f);
-            float3 p110 = basePos + new float3(voxelSize, voxelSize, 0f);
-            float3 p010 = basePos + new float3(0f, voxelSize, 0f);
-            float3 p001 = basePos + new float3(0f, 0f, voxelSize);
-            float3 p101 = basePos + new float3(voxelSize, 0f, voxelSize);
-            float3 p111 = basePos + new float3(voxelSize, voxelSize, voxelSize);
-            float3 p011 = basePos + new float3(0f, voxelSize, voxelSize);
+                float3 p000 = basePos;
+                float3 p100 = basePos + new float3(voxelSize, 0f, 0f);
+                float3 p110 = basePos + new float3(voxelSize, voxelSize, 0f);
+                float3 p010 = basePos + new float3(0f, voxelSize, 0f);
+                float3 p001 = basePos + new float3(0f, 0f, voxelSize);
+                float3 p101 = basePos + new float3(voxelSize, 0f, voxelSize);
+                float3 p111 = basePos + new float3(voxelSize, voxelSize, voxelSize);
+                float3 p011 = basePos + new float3(0f, voxelSize, voxelSize);
 
-            FixedList512Bytes<float3> edgeVertices = default;
-            for (int i = 0; i < 12; i++) edgeVertices.Add(float3.zero);
+                FixedList512Bytes<float3> ev = default;
+                for (int i = 0; i < 12; i++) ev.Add(float3.zero);
 
-            if ((edgeMask & 1) != 0) edgeVertices[0] = InterpolateIso(p000, p100, d000, d100);
-            if ((edgeMask & 2) != 0) edgeVertices[1] = InterpolateIso(p100, p110, d100, d110);
-            if ((edgeMask & 4) != 0) edgeVertices[2] = InterpolateIso(p110, p010, d110, d010);
-            if ((edgeMask & 8) != 0) edgeVertices[3] = InterpolateIso(p010, p000, d010, d000);
-            if ((edgeMask & 16) != 0) edgeVertices[4] = InterpolateIso(p001, p101, d001, d101);
-            if ((edgeMask & 32) != 0) edgeVertices[5] = InterpolateIso(p101, p111, d101, d111);
-            if ((edgeMask & 64) != 0) edgeVertices[6] = InterpolateIso(p111, p011, d111, d011);
-            if ((edgeMask & 128) != 0) edgeVertices[7] = InterpolateIso(p011, p001, d011, d001);
-            if ((edgeMask & 256) != 0) edgeVertices[8] = InterpolateIso(p000, p001, d000, d001);
-            if ((edgeMask & 512) != 0) edgeVertices[9] = InterpolateIso(p100, p101, d100, d101);
-            if ((edgeMask & 1024) != 0) edgeVertices[10] = InterpolateIso(p110, p111, d110, d111);
-            if ((edgeMask & 2048) != 0) edgeVertices[11] = InterpolateIso(p010, p011, d010, d011);
+                if ((edgeMask & 1) != 0) ev[0] = InterpolateIso(p000, p100, d000, d100);
+                if ((edgeMask & 2) != 0) ev[1] = InterpolateIso(p100, p110, d100, d110);
+                if ((edgeMask & 4) != 0) ev[2] = InterpolateIso(p110, p010, d110, d010);
+                if ((edgeMask & 8) != 0) ev[3] = InterpolateIso(p010, p000, d010, d000);
+                if ((edgeMask & 16) != 0) ev[4] = InterpolateIso(p001, p101, d001, d101);
+                if ((edgeMask & 32) != 0) ev[5] = InterpolateIso(p101, p111, d101, d111);
+                if ((edgeMask & 64) != 0) ev[6] = InterpolateIso(p111, p011, d111, d011);
+                if ((edgeMask & 128) != 0) ev[7] = InterpolateIso(p011, p001, d011, d001);
+                if ((edgeMask & 256) != 0) ev[8] = InterpolateIso(p000, p001, d000, d001);
+                if ((edgeMask & 512) != 0) ev[9] = InterpolateIso(p100, p101, d100, d101);
+                if ((edgeMask & 1024) != 0) ev[10] = InterpolateIso(p110, p111, d110, d111);
+                if ((edgeMask & 2048) != 0) ev[11] = InterpolateIso(p010, p011, d010, d011);
 
-            // === ENSAMBLAJE DE TRIÁNGULOS ===
-            int triBase = cubeIndex * 16;
-            for (int i = 0; i < 16; i += 3) {
-                int triIndex = triTable[triBase + i];
-                if (triIndex == -1) break;
+                // === ENSAMBLAJE DE TRIÁNGULOS ===
+                int triBase = cubeIndex * 16;
+                for (int i = 0; i < 16; i += 3) {
+                    int t0 = triTable[triBase + i];
+                    if (t0 == -1) break;
 
-                int i1 = triTable[triBase + i + 1];
-                int i2 = triTable[triBase + i + 2];
+                    int t1 = triTable[triBase + i + 1];
+                    int t2 = triTable[triBase + i + 2];
 
-                Triangle newTriangle;
-                newTriangle.v0 = edgeVertices[triIndex];
-                newTriangle.v1 = edgeVertices[i1];
-                newTriangle.v2 = edgeVertices[i2];
-                newTriangle.m0 = matID;
-                newTriangle.m1 = matID;
-                newTriangle.m2 = matID;
+                    int baseVert = outVertices.Length;
 
-                triangles.Enqueue(newTriangle);
+                    outVertices.Add(new Vector3(ev[t0].x, ev[t0].y, ev[t0].z));
+                    outVertices.Add(new Vector3(ev[t2].x, ev[t2].y, ev[t2].z));
+                    outVertices.Add(new Vector3(ev[t1].x, ev[t1].y, ev[t1].z));
+
+                    outTriangles.Add(baseVert);
+                    outTriangles.Add(baseVert + 1);
+                    outTriangles.Add(baseVert + 2);
+
+                    outUVs.Add(new Vector2(matID, 0f));
+                    outUVs.Add(new Vector2(matID, 0f));
+                    outUVs.Add(new Vector2(matID, 0f));
+                }
             }
         }
     }
