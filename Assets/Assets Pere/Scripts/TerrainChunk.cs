@@ -298,11 +298,13 @@ public class TerrainChunk : MonoBehaviour {
         if (Application.isEditor && !Application.isPlaying) SaveDensities();
 
         MeshRenderer renderer = GetComponent<MeshRenderer>();
-        if (renderer != null && MaterialRegistry.Instance != null && MaterialRegistry.Instance.SplatTextureArray != null) {
-            if (propBlock == null) propBlock = new MaterialPropertyBlock();
-            renderer.GetPropertyBlock(propBlock);
-            propBlock.SetTexture("_TerrainSplatArray", MaterialRegistry.Instance.SplatTextureArray);
-            renderer.SetPropertyBlock(propBlock);
+        if (renderer != null) {
+            if (MaterialRegistry.Instance != null && MaterialRegistry.Instance.SplatTextureArray != null) {
+                if (propBlock == null) propBlock = new MaterialPropertyBlock();
+                renderer.GetPropertyBlock(propBlock);
+                propBlock.SetTexture("_TerrainSplatArray", MaterialRegistry.Instance.SplatTextureArray);
+                renderer.SetPropertyBlock(propBlock);
+            }
         }
     }
 
