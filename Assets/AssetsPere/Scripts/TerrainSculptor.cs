@@ -6,6 +6,14 @@ using UnityEngine;
 
 public enum BrushShape { Sphere, Cube, Cylinder, Cone, Noise }
 
+public enum BrushMode {
+    Add,
+    Subtract,
+    Smooth,
+    Flatten,
+    Paint
+}
+
 public static class TerrainSculptor {
     // === ENTRADA PRINCIPAL ===
     public static void Apply(
@@ -26,48 +34,73 @@ public static class TerrainSculptor {
         switch (shape) {
             case BrushShape.Sphere:
                 new SphereJob {
-                    densities = densities, metadata = metadata,
-                    gridSize = gridSize, voxelSize = voxelSize,
-                    hitPoint = hitPoint, radius = radius,
-                    strength = strength, brushType = type, materialID = materialID
+                    densities = densities,
+                    metadata = metadata,
+                    gridSize = gridSize,
+                    voxelSize = voxelSize,
+                    hitPoint = hitPoint,
+                    radius = radius,
+                    strength = strength,
+                    brushType = type,
+                    materialID = materialID
                 }.Schedule(densities.Length, 64).Complete();
                 break;
 
             case BrushShape.Cube:
                 new CubeJob {
-                    densities = densities, metadata = metadata,
-                    gridSize = gridSize, voxelSize = voxelSize,
-                    hitPoint = hitPoint, radius = radius,
-                    strength = strength, brushType = type, materialID = materialID,
+                    densities = densities,
+                    metadata = metadata,
+                    gridSize = gridSize,
+                    voxelSize = voxelSize,
+                    hitPoint = hitPoint,
+                    radius = radius,
+                    strength = strength,
+                    brushType = type,
+                    materialID = materialID,
                     isVertical = isVertical
                 }.Schedule(densities.Length, 64).Complete();
                 break;
 
             case BrushShape.Cylinder:
                 new CylinderJob {
-                    densities = densities, metadata = metadata,
-                    gridSize = gridSize, voxelSize = voxelSize,
-                    hitPoint = hitPoint, radius = radius,
-                    strength = strength, brushType = type, materialID = materialID,
+                    densities = densities,
+                    metadata = metadata,
+                    gridSize = gridSize,
+                    voxelSize = voxelSize,
+                    hitPoint = hitPoint,
+                    radius = radius,
+                    strength = strength,
+                    brushType = type,
+                    materialID = materialID,
                     isVertical = isVertical
                 }.Schedule(densities.Length, 64).Complete();
                 break;
 
             case BrushShape.Cone:
                 new ConeJob {
-                    densities = densities, metadata = metadata,
-                    gridSize = gridSize, voxelSize = voxelSize,
-                    hitPoint = hitPoint, radius = radius,
-                    strength = strength, brushType = type, materialID = materialID
+                    densities = densities,
+                    metadata = metadata,
+                    gridSize = gridSize,
+                    voxelSize = voxelSize,
+                    hitPoint = hitPoint,
+                    radius = radius,
+                    strength = strength,
+                    brushType = type,
+                    materialID = materialID
                 }.Schedule(densities.Length, 64).Complete();
                 break;
 
             case BrushShape.Noise:
                 new NoiseJob {
-                    densities = densities, metadata = metadata,
-                    gridSize = gridSize, voxelSize = voxelSize,
-                    hitPoint = hitPoint, radius = radius,
-                    strength = strength, brushType = type, materialID = materialID
+                    densities = densities,
+                    metadata = metadata,
+                    gridSize = gridSize,
+                    voxelSize = voxelSize,
+                    hitPoint = hitPoint,
+                    radius = radius,
+                    strength = strength,
+                    brushType = type,
+                    materialID = materialID
                 }.Schedule(densities.Length, 64).Complete();
                 break;
         }
