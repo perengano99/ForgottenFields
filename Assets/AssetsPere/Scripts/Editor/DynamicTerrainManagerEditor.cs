@@ -11,6 +11,9 @@ public class DynamicTerrainManagerEditor : Editor {
     private void OnEnable() => RefreshMaterialList();
 
     private void RefreshMaterialList() {
+        if (MaterialRegistry.Instance != null)
+            MaterialRegistry.Instance.InitializeIfNeeded();
+
         TerrainMaterial[] assets = Resources.LoadAll<TerrainMaterial>("Terrain/Material");
 
         materialNames = new string[assets.Length + 1];
@@ -28,12 +31,22 @@ public class DynamicTerrainManagerEditor : Editor {
         DynamicTerrainManager mgr = (DynamicTerrainManager)target;
         serializedObject.Update();
 
-        // === MODO EDICIÓN ===
+        SerializedProperty editModeProp = serializedObject.FindProperty("currentEditMode");
+        SerializedProperty isEditingProp = serializedObject.FindProperty("isEditing");
+        SerializedProperty shapeProp = serializedObject.FindProperty("CurrentBrushShape");
+        SerializedProperty radiusProp = serializedObject.FindProperty("BrushRadius");
+        SerializedProperty strengthProp = serializedObject.FindProperty("BrushStrength");
+        SerializedProperty fixedStepProp = serializedObject.FindProperty("FixedStep");
+
+        // === MODO DE EDICIÓN ===
         EditorGUILayout.BeginVertical("box");
+        EditorGUILayout.LabelField("Edit Mode", EditorStyles.boldLabel);
+        EditorGUILayout.PropertyField(editModeProp);
+
         Color prevColor = GUI.backgroundColor;
-        GUI.backgroundColor = mgr.isEditing ? new Color(0.4f, 1f, 0.4f) : new Color(1f, 0.4f, 0.4f);
-        if (GUILayout.Button(mgr.isEditing ? "✏️  SALIR del Modo Edición" : "✏️  ENTRAR al Modo Edición", GUILayout.Height(32))) {
-            mgr.isEditing = !mgr.isEditing;
+        GUI.backgroundColor = isEditingProp.boolValue ? new Color(0.4f, 1f, 0.4f) : new Color(1f, 0.4f, 0.4f);
+        if (GUILayout.Button(isEditingProp.boolValue ? "✏️  SALIR del Modo Edición" : "✏️  ENTRAR al Modo Edición", GUILayout.Height(32))) {
+            isEditingProp.boolValue = !isEditingProp.boolValue;
             SceneView.RepaintAll();
         }
         GUI.backgroundColor = prevColor;
@@ -54,38 +67,48 @@ public class DynamicTerrainManagerEditor : Editor {
 
         EditorGUILayout.Space(4);
 
-        // === BRUSH SETTINGS ===
+        // === BRUSH SETTINGS (CONDICIONAL) ===
         EditorGUILayout.BeginVertical("box");
         EditorGUILayout.LabelField("Brush Settings", EditorStyles.boldLabel);
-        mgr.CurrentBrushShape = (BrushShape)EditorGUILayout.EnumPopup("Shape", mgr.CurrentBrushShape);
-        mgr.CurrentBrushType = (BrushType)EditorGUILayout.EnumPopup("Type", mgr.CurrentBrushType);
-        mgr.BrushRadius = EditorGUILayout.Slider("Radius", mgr.BrushRadius, 0.5f, 50f);
-        mgr.BrushStrength = EditorGUILayout.Slider("Strength", mgr.BrushStrength, 0.01f, 5f);
-        mgr.IsVerticalBrush = EditorGUILayout.Toggle("Vertical Brush", mgr.IsVerticalBrush);
-        EditorGUILayout.EndVertical();
 
-        EditorGUILayout.Space(4);
-
-        // === MATERIAL SELECTION ===
-        EditorGUILayout.BeginVertical("box");
-        EditorGUILayout.LabelField("Material Selection", EditorStyles.boldLabel);
-
-        if (GUILayout.Button("Refresh Materials", EditorStyles.miniButton))
-            RefreshMaterialList();
-
-        if (materialNames.Length > 0) {
-            // === SINCRONIZAR POPUP CON SelectedMaterialID ===
-            for (int i = 0; i < materialIDs.Length; i++)
-                if (materialIDs[i] == mgr.SelectedMaterialID) { materialPopupIndex = i; break; }
-
-            int newIndex = EditorGUILayout.Popup("Material Activo", materialPopupIndex, materialNames);
-            if (newIndex != materialPopupIndex) {
-                materialPopupIndex = newIndex;
-                mgr.SelectedMaterialID = (byte)materialIDs[materialPopupIndex];
-            }
-        } else EditorGUILayout.HelpBox("No hay TerrainMaterial en Resources/Terrain/Material.", MessageType.Warning);
+        if ((EditMode)editModeProp.enumValueIndex == EditMode.Sculpt) {
+            EditorGUILayout.PropertyField(shapeProp, new GUIContent("Brush Shape"));
+            EditorGUILayout.PropertyField(radiusProp, new GUIContent("Radius"));
+            EditorGUILayout.PropertyField(strengthProp, new GUIContent("Strength"));
+            if (fixedStepProp != null)
+                EditorGUILayout.PropertyField(fixedStepProp, new GUIContent("FixedStep"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("IsVerticalBrush"), new GUIContent("Vertical Brush"));
+        } else {
+            EditorGUILayout.PropertyField(radiusProp, new GUIContent("Radius"));
+        }
 
         EditorGUILayout.EndVertical();
+
+        // === MATERIAL SELECTION (SOLO PAINT) ===
+        if ((EditMode)editModeProp.enumValueIndex == EditMode.Paint) {
+            EditorGUILayout.Space(4);
+            EditorGUILayout.BeginVertical("box");
+            EditorGUILayout.LabelField("Material Selection", EditorStyles.boldLabel);
+
+            if (GUILayout.Button("Refresh Materials", EditorStyles.miniButton))
+                RefreshMaterialList();
+
+            if (MaterialRegistry.Instance == null)
+                EditorGUILayout.HelpBox("MaterialRegistry.Instance no está disponible.", MessageType.Warning);
+
+            if (materialNames.Length > 0) {
+                for (int i = 0; i < materialIDs.Length; i++)
+                    if (materialIDs[i] == mgr.SelectedMaterialID) { materialPopupIndex = i; break; }
+
+                int newIndex = EditorGUILayout.Popup("Material Activo", materialPopupIndex, materialNames);
+                if (newIndex != materialPopupIndex) {
+                    materialPopupIndex = newIndex;
+                    mgr.SelectedMaterialID = (byte)materialIDs[materialPopupIndex];
+                }
+            } else EditorGUILayout.HelpBox("No hay TerrainMaterial registrados.", MessageType.Warning);
+
+            EditorGUILayout.EndVertical();
+        }
 
         EditorGUILayout.Space(4);
 
@@ -115,24 +138,24 @@ public class DynamicTerrainManagerEditor : Editor {
         if (!mgr.isEditing) return;
 
         Event e = Event.current;
+        EventModifiers modifiers = e.modifiers;
 
         // === ATAJOS DE TECLADO ===
         if (e.type == EventType.KeyDown) {
             if (e.keyCode == KeyCode.Alpha1) { mgr.CurrentBrushShape = BrushShape.Sphere; e.Use(); }
-            else if (e.keyCode == KeyCode.Alpha2) { mgr.CurrentBrushShape = BrushShape.Cube; e.Use(); }
-            else if (e.keyCode == KeyCode.Alpha3) { mgr.CurrentBrushShape = BrushShape.Cylinder; e.Use(); }
-            else if (e.keyCode == KeyCode.Alpha4) { mgr.CurrentBrushShape = BrushShape.Cone; e.Use(); }
-            else if (e.keyCode == KeyCode.Alpha5) { mgr.CurrentBrushShape = BrushShape.Noise; e.Use(); }
+            else if (e.keyCode == KeyCode.Alpha2) { mgr.CurrentBrushShape = BrushShape.Box; e.Use(); }
+            else if (e.keyCode == KeyCode.Alpha3) { mgr.CurrentBrushShape = BrushShape.VerticalPillar; e.Use(); }
+            else if (e.keyCode == KeyCode.Alpha5) { mgr.CurrentBrushShape = BrushShape.NoiseFeature; e.Use(); }
             Repaint();
         }
 
         // === RUEDA DEL RATÓN ===
         if (e.type == EventType.ScrollWheel) {
             float delta = -e.delta.y * 0.5f;
-            if (e.shift) {
+            if ((modifiers & EventModifiers.Shift) != 0) {
                 mgr.BrushRadius = Mathf.Clamp(mgr.BrushRadius + delta, 0.5f, 50f);
                 e.Use();
-            } else if (e.control) {
+            } else if ((modifiers & EventModifiers.Control) != 0) {
                 mgr.BrushStrength = Mathf.Clamp(mgr.BrushStrength + delta * 0.1f, 0.01f, 5f);
                 e.Use();
             }
@@ -144,26 +167,56 @@ public class DynamicTerrainManagerEditor : Editor {
         bool hasHit = Physics.Raycast(ray, out RaycastHit hit);
 
         if (hasHit) {
-            Handles.color = new Color(0f, 1f, 0.8f, 0.8f);
+            // === COLOR DINÁMICO EN SCULPT ===
+            if (mgr.currentEditMode == EditMode.Sculpt) {
+                if ((modifiers & EventModifiers.Control) != 0) Handles.color = Color.blue;
+                else if ((modifiers & EventModifiers.Shift) != 0) Handles.color = Color.yellow;
+                else if ((modifiers & EventModifiers.Alt) != 0) Handles.color = Color.red;
+                else Handles.color = Color.green;
+            } else Handles.color = new Color(0f, 1f, 0.8f, 0.8f);
+
             Handles.DrawWireDisc(hit.point, hit.normal, mgr.BrushRadius);
             Handles.DrawWireDisc(hit.point, hit.normal, mgr.BrushRadius * 0.5f);
             Handles.SphereHandleCap(0, hit.point, Quaternion.identity, mgr.BrushRadius * 0.08f, EventType.Repaint);
 
-            // === LABEL DE ESTADO ===
             Handles.Label(hit.point + Vector3.up * (mgr.BrushRadius + 0.5f),
-                $"{mgr.CurrentBrushShape} | {mgr.CurrentBrushType}\nR: {mgr.BrushRadius:F1}  S: {mgr.BrushStrength:F2}");
+                $"{mgr.currentEditMode} | {mgr.CurrentBrushShape}\nR: {mgr.BrushRadius:F1}  S: {mgr.BrushStrength:F2}");
         }
 
-        // === PINTAR AL HACER CLICK ===
-        if ((e.type == EventType.MouseDown || e.type == EventType.MouseDrag) && e.button == 0 && hasHit) {
-            if (GUIUtility.hotControl == 0)
-                GUIUtility.hotControl = GUIUtility.GetControlID(FocusType.Passive);
+        // === LEYENDA EN PANTALLA ===
+        if (mgr.currentEditMode == EditMode.Sculpt) {
+            Handles.BeginGUI();
+            GUI.Box(new Rect(10, 10, 430, 24), "LMB: Add | Alt+LMB: Sub | Shift+LMB: Flatten | Ctrl+LMB: Smooth");
+            Handles.EndGUI();
+        }
 
-            mgr.ApplyBrush(hit.point);
+        int controlID = GUIUtility.GetControlID(FocusType.Passive);
+
+        // === CONSUMIR CLICK IZQUIERDO (EVITAR PÉRDIDA DE SELECCIÓN) ===
+        if (e.type == EventType.MouseDown && e.button == 0 && hasHit) {
+            GUIUtility.hotControl = controlID;
             e.Use();
         }
 
-        if (e.type == EventType.MouseUp && e.button == 0 && GUIUtility.hotControl != 0)
+        // === PINTAR / ESCULPIR ===
+        if ((e.type == EventType.MouseDown || e.type == EventType.MouseDrag) && e.button == 0 && hasHit) {
+            if (mgr.currentEditMode == EditMode.Paint)
+                mgr.ApplyPaintBrush(hit.point);
+            else {
+                SculptMode mode;
+                if ((modifiers & EventModifiers.Control) != 0) mode = SculptMode.Smooth;
+                else if ((modifiers & EventModifiers.Shift) != 0) mode = SculptMode.Flatten;
+                else if ((modifiers & EventModifiers.Alt) != 0) mode = SculptMode.Subtract;
+                else mode = SculptMode.Add;
+
+                mgr.ApplySculptBrush(hit.point, mode);
+            }
+
+            if (e.type == EventType.MouseDrag)
+                e.Use();
+        }
+
+        if (e.type == EventType.MouseUp && e.button == 0 && GUIUtility.hotControl == controlID)
             GUIUtility.hotControl = 0;
 
         if (e.type == EventType.MouseMove || e.type == EventType.MouseDrag)

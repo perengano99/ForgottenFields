@@ -4,7 +4,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 
-public enum BrushShape { Sphere, Cube, Cylinder, Cone, Noise }
+public enum BrushShape { Sphere, Box, VerticalPillar, NoiseFeature }
 
 public enum BrushMode {
     Add,
@@ -29,293 +29,233 @@ public static class TerrainSculptor {
         byte materialID,
         bool isVertical = false) {
 
-        float3 hitPoint = new float3(localHitPoint.x, localHitPoint.y, localHitPoint.z);
+        if (!densities.IsCreated || !metadata.IsCreated || radius <= 0f || voxelSize <= 0f) return;
 
-        switch (shape) {
-            case BrushShape.Sphere:
-                new SphereJob {
-                    densities = densities,
-                    metadata = metadata,
-                    gridSize = gridSize,
-                    voxelSize = voxelSize,
-                    hitPoint = hitPoint,
-                    radius = radius,
-                    strength = strength,
-                    brushType = type,
-                    materialID = materialID
-                }.Schedule(densities.Length, 64).Complete();
-                break;
+        float dt = Time.deltaTime > 0f ? Time.deltaTime : (1f / 60f);
 
-            case BrushShape.Cube:
-                new CubeJob {
-                    densities = densities,
-                    metadata = metadata,
-                    gridSize = gridSize,
-                    voxelSize = voxelSize,
-                    hitPoint = hitPoint,
-                    radius = radius,
-                    strength = strength,
-                    brushType = type,
-                    materialID = materialID,
-                    isVertical = isVertical
-                }.Schedule(densities.Length, 64).Complete();
-                break;
+        SculptJob job = new SculptJob {
+            densities = densities,
+            metadata = metadata,
+            gridSize = gridSize,
+            voxelSize = voxelSize,
+            hitPoint = new float3(localHitPoint.x, localHitPoint.y, localHitPoint.z),
+            radius = radius,
+            strength = strength,
+            brushShape = shape,
+            brushType = type,
+            materialID = materialID,
+            isVertical = isVertical,
+            deltaTime = dt,
+            lowPolyStepFactor = 3.5f,
+            noiseScale = 0.18f,
+            noiseAmplitude = 1.0f
+        };
 
-            case BrushShape.Cylinder:
-                new CylinderJob {
-                    densities = densities,
-                    metadata = metadata,
-                    gridSize = gridSize,
-                    voxelSize = voxelSize,
-                    hitPoint = hitPoint,
-                    radius = radius,
-                    strength = strength,
-                    brushType = type,
-                    materialID = materialID,
-                    isVertical = isVertical
-                }.Schedule(densities.Length, 64).Complete();
-                break;
-
-            case BrushShape.Cone:
-                new ConeJob {
-                    densities = densities,
-                    metadata = metadata,
-                    gridSize = gridSize,
-                    voxelSize = voxelSize,
-                    hitPoint = hitPoint,
-                    radius = radius,
-                    strength = strength,
-                    brushType = type,
-                    materialID = materialID
-                }.Schedule(densities.Length, 64).Complete();
-                break;
-
-            case BrushShape.Noise:
-                new NoiseJob {
-                    densities = densities,
-                    metadata = metadata,
-                    gridSize = gridSize,
-                    voxelSize = voxelSize,
-                    hitPoint = hitPoint,
-                    radius = radius,
-                    strength = strength,
-                    brushType = type,
-                    materialID = materialID
-                }.Schedule(densities.Length, 64).Complete();
-                break;
-        }
+        job.Schedule(densities.Length, 64).Complete();
     }
 
-    // === UTILIDAD COMPARTIDA ===
-    private static void DecomposeIndex(int index, int3 gridSize, out int x, out int y, out int z) {
-        int pointsX = gridSize.x + 1;
-        int pointsY = gridSize.y + 1;
-        int planeSize = pointsX * pointsY;
-        z = index / planeSize;
-        int rem = index - z * planeSize;
-        y = rem / pointsX;
-        x = rem - y * pointsX;
+    // === PINTURA DE MATERIALES ===
+    public static JobHandle SchedulePaintJob(
+        NativeArray<byte> metadata,
+        int3 gridSize,
+        float voxelSize,
+        Vector3 localHitPoint,
+        float radius,
+        byte targetMaterialID,
+        JobHandle dependsOn = default) {
+
+        if (!metadata.IsCreated || radius <= 0f || voxelSize <= 0f) return dependsOn;
+
+        PaintTerrainJob job = new PaintTerrainJob {
+            Metadata = metadata,
+            gridSize = gridSize,
+            voxelSize = voxelSize,
+            localHitPoint = localHitPoint,
+            radius = radius,
+            targetMaterialID = targetMaterialID
+        };
+
+        return job.Schedule(metadata.Length, 64, dependsOn);
     }
 
-    private static void ApplyBrush(NativeArray<float> densities, NativeArray<byte> metadata, int index, float falloff, float strength, BrushType brushType, byte materialID, float3 nodePos, float3 hitPoint, float voxelSize) {
-        switch (brushType) {
-            case BrushType.SphereAdd:
-                densities[index] -= strength * falloff;
-                if (densities[index] < 0f) metadata[index] = materialID;
-                break;
-            case BrushType.SphereSubtract:
-                densities[index] += strength * falloff;
-                break;
-            case BrushType.Flatten:
-                float dy = nodePos.y - hitPoint.y;
-                densities[index] = math.lerp(densities[index], dy, strength * falloff);
-                if (densities[index] < 0f) metadata[index] = materialID;
-                break;
-        }
-    }
-
-    // === SPHERE JOB ===
     [BurstCompile]
-    private struct SphereJob : IJobParallelFor {
-        public NativeArray<float> densities;
-        public NativeArray<byte> metadata;
+    public struct PaintTerrainJob : IJobParallelFor {
+        public NativeArray<byte> Metadata;
         public int3 gridSize;
         public float voxelSize;
-        public float3 hitPoint;
+        public Vector3 localHitPoint;
         public float radius;
-        public float strength;
-        public BrushType brushType;
-        public byte materialID;
+        public byte targetMaterialID;
 
         public void Execute(int index) {
             int pointsX = gridSize.x + 1;
             int pointsY = gridSize.y + 1;
             int planeSize = pointsX * pointsY;
+
             int z = index / planeSize;
             int rem = index - z * planeSize;
             int y = rem / pointsX;
             int x = rem - y * pointsX;
+
             if (x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
 
-            float3 nodePos = new float3(x, y, z) * voxelSize;
-            float dist = math.distance(nodePos, hitPoint);
-            if (dist > radius) return;
+            Vector3 voxelPos = new Vector3(x, y, z) * voxelSize;
+            if (Vector3.Distance(voxelPos, localHitPoint) >= radius) return;
 
-            float falloff = math.smoothstep(radius, 0f, dist);
-            ApplyBrush(densities, metadata, index, falloff, strength, brushType, materialID, nodePos, hitPoint, voxelSize);
+            Metadata[index] = targetMaterialID;
         }
     }
 
-    // === CUBE JOB ===
     [BurstCompile]
-    private struct CubeJob : IJobParallelFor {
+    private struct SculptJob : IJobParallelFor {
         public NativeArray<float> densities;
         public NativeArray<byte> metadata;
+
         public int3 gridSize;
         public float voxelSize;
+
         public float3 hitPoint;
         public float radius;
         public float strength;
+
+        public BrushShape brushShape;
         public BrushType brushType;
         public byte materialID;
         public bool isVertical;
 
+        public float deltaTime;
+        public float lowPolyStepFactor;
+        public float noiseScale;
+        public float noiseAmplitude;
+
+        private float FixedStepAmount => math.max(0.0005f, deltaTime * lowPolyStepFactor);
+
         public void Execute(int index) {
             int pointsX = gridSize.x + 1;
             int pointsY = gridSize.y + 1;
             int planeSize = pointsX * pointsY;
+
             int z = index / planeSize;
             int rem = index - z * planeSize;
             int y = rem / pointsX;
             int x = rem - y * pointsX;
+
             if (x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
 
-            float3 nodePos = new float3(x, y, z) * voxelSize;
-            float3 delta = nodePos - hitPoint;
+            float3 voxelPos = new float3(x, y, z) * voxelSize;
 
-            bool inX = math.abs(delta.x) <= radius;
-            bool inZ = math.abs(delta.z) <= radius;
-            bool inY = isVertical
-                ? (delta.y >= 0f && delta.y <= radius * 2f)
-                : (math.abs(delta.y) <= radius);
+            bool affects = false;
+            float shapeFactor = 1f;
 
-            if (!inX || !inY || !inZ) return;
+            switch (brushShape) {
+                case BrushShape.Sphere:
+                    EvaluateSphere(voxelPos, ref affects, ref shapeFactor);
+                    break;
 
-            ApplyBrush(densities, metadata, index, 1f, strength, brushType, materialID, nodePos, hitPoint, voxelSize);
+                case BrushShape.Box:
+                    EvaluateBox(voxelPos, ref affects, ref shapeFactor);
+                    break;
+
+                case BrushShape.VerticalPillar:
+                    EvaluateVerticalPillar(voxelPos, ref affects, ref shapeFactor);
+                    break;
+
+                case BrushShape.NoiseFeature:
+                    EvaluateNoiseFeature(voxelPos, ref affects, ref shapeFactor);
+                    break;
+            }
+
+            if (!affects) return;
+
+            ApplyQuantizedDensity(index, voxelPos, shapeFactor);
+
+            if (densities[index] < 0f)
+                metadata[index] = materialID;
         }
-    }
 
-    // === CYLINDER JOB ===
-    [BurstCompile]
-    private struct CylinderJob : IJobParallelFor {
-        public NativeArray<float> densities;
-        public NativeArray<byte> metadata;
-        public int3 gridSize;
-        public float voxelSize;
-        public float3 hitPoint;
-        public float radius;
-        public float strength;
-        public BrushType brushType;
-        public byte materialID;
-        public bool isVertical;
-
-        public void Execute(int index) {
-            int pointsX = gridSize.x + 1;
-            int pointsY = gridSize.y + 1;
-            int planeSize = pointsX * pointsY;
-            int z = index / planeSize;
-            int rem = index - z * planeSize;
-            int y = rem / pointsX;
-            int x = rem - y * pointsX;
-            if (x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
-
-            float3 nodePos = new float3(x, y, z) * voxelSize;
-            float2 xzDelta = new float2(nodePos.x - hitPoint.x, nodePos.z - hitPoint.z);
-            float xzDist = math.length(xzDelta);
-            if (xzDist > radius) return;
-
-            float yDelta = nodePos.y - hitPoint.y;
-            bool inHeight = isVertical
-                ? (yDelta >= 0f && yDelta <= radius * 2f)
-                : (math.abs(yDelta) <= radius);
-            if (!inHeight) return;
-
-            float falloff = math.smoothstep(radius, 0f, xzDist);
-            ApplyBrush(densities, metadata, index, falloff, strength, brushType, materialID, nodePos, hitPoint, voxelSize);
-        }
-    }
-
-    // === CONE JOB ===
-    [BurstCompile]
-    private struct ConeJob : IJobParallelFor {
-        public NativeArray<float> densities;
-        public NativeArray<byte> metadata;
-        public int3 gridSize;
-        public float voxelSize;
-        public float3 hitPoint;
-        public float radius;
-        public float strength;
-        public BrushType brushType;
-        public byte materialID;
-
-        public void Execute(int index) {
-            int pointsX = gridSize.x + 1;
-            int pointsY = gridSize.y + 1;
-            int planeSize = pointsX * pointsY;
-            int z = index / planeSize;
-            int rem = index - z * planeSize;
-            int y = rem / pointsX;
-            int x = rem - y * pointsX;
-            if (x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
-
-            float3 nodePos = new float3(x, y, z) * voxelSize;
-            float yDelta = nodePos.y - hitPoint.y;
-            if (yDelta < 0f || yDelta > radius) return;
-
-            float heightT = 1f - (yDelta / radius);
-            float effectiveRadius = radius * heightT;
-
-            float2 xzDelta = new float2(nodePos.x - hitPoint.x, nodePos.z - hitPoint.z);
-            float xzDist = math.length(xzDelta);
-            if (xzDist > effectiveRadius) return;
-
-            float falloff = math.smoothstep(effectiveRadius, 0f, xzDist) * heightT;
-            ApplyBrush(densities, metadata, index, falloff, strength, brushType, materialID, nodePos, hitPoint, voxelSize);
-        }
-    }
-
-    // === NOISE JOB ===
-    [BurstCompile]
-    private struct NoiseJob : IJobParallelFor {
-        public NativeArray<float> densities;
-        public NativeArray<byte> metadata;
-        public int3 gridSize;
-        public float voxelSize;
-        public float3 hitPoint;
-        public float radius;
-        public float strength;
-        public BrushType brushType;
-        public byte materialID;
-
-        public void Execute(int index) {
-            int pointsX = gridSize.x + 1;
-            int pointsY = gridSize.y + 1;
-            int planeSize = pointsX * pointsY;
-            int z = index / planeSize;
-            int rem = index - z * planeSize;
-            int y = rem / pointsX;
-            int x = rem - y * pointsX;
-            if (x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
-
-            float3 nodePos = new float3(x, y, z) * voxelSize;
-            float dist = math.distance(nodePos, hitPoint);
+        // === EVALUACIÓN ESPACIAL ===
+        private void EvaluateSphere(float3 voxelPos, ref bool affects, ref float factor) {
+            float dist = math.distance(voxelPos, hitPoint);
             if (dist > radius) return;
 
-            float radialFalloff = math.smoothstep(radius, 0f, dist);
-            float noiseVal = math.abs(Unity.Mathematics.noise.cnoise(nodePos * 0.3f));
-            float falloff = radialFalloff * noiseVal;
+            affects = true;
+            factor = math.saturate(1f - (dist / radius));
+        }
 
-            ApplyBrush(densities, metadata, index, falloff, strength, brushType, materialID, nodePos, hitPoint, voxelSize);
+        private void EvaluateBox(float3 voxelPos, ref bool affects, ref float factor) {
+            float3 d = math.abs(voxelPos - hitPoint);
+            if (d.x > radius || d.y > radius || d.z > radius) return;
+
+            affects = true;
+            factor = 1f;
+        }
+
+        private void EvaluateVerticalPillar(float3 voxelPos, ref bool affects, ref float factor) {
+            float2 xzDist = new float2(voxelPos.x - hitPoint.x, voxelPos.z - hitPoint.z);
+            float radial = math.length(xzDist);
+            if (radial > radius) return;
+
+            float lower = hitPoint.y;
+            float upper = hitPoint.y;
+
+            if (brushType == BrushType.SphereAdd)
+                upper = hitPoint.y + radius * 2f;
+            else if (brushType == BrushType.SphereSubtract)
+                lower = hitPoint.y - radius * 2f;
+            else {
+                lower = hitPoint.y - radius;
+                upper = hitPoint.y + radius;
+            }
+
+            if (voxelPos.y < lower || voxelPos.y > upper) return;
+
+            affects = true;
+            factor = math.saturate(1f - (radial / radius));
+        }
+
+        private void EvaluateNoiseFeature(float3 voxelPos, ref bool affects, ref float factor) {
+            float2 xz = new float2(voxelPos.x, voxelPos.z);
+            float2 hitXZ = new float2(hitPoint.x, hitPoint.z);
+            float radial = math.length(xz - hitXZ);
+            if (radial > radius) return;
+
+            float radialFactor = math.saturate(1f - (radial / radius));
+            float n = Unity.Mathematics.noise.cnoise(xz * noiseScale);
+            float noiseFactor = 1f + (n * noiseAmplitude);
+
+            affects = true;
+            factor = radialFactor * noiseFactor;
+        }
+
+        // === APLICACIÓN LOW POLY CUANTIZADA ===
+        private void ApplyQuantizedDensity(int index, float3 voxelPos, float shapeFactor) {
+            float step = FixedStepAmount * math.max(0.01f, math.abs(strength)) * math.max(0.01f, shapeFactor);
+            float current = densities[index];
+
+            switch (brushType) {
+                case BrushType.SphereAdd: {
+                    float deltaDensity = -math.sign(strength == 0f ? 1f : strength) * step;
+                    densities[index] = current + deltaDensity;
+                    break;
+                }
+                case BrushType.SphereSubtract: {
+                    float deltaDensity = math.sign(strength == 0f ? 1f : strength) * step;
+                    densities[index] = current + deltaDensity;
+                    break;
+                }
+                case BrushType.Flatten: {
+                    float target = voxelPos.y - hitPoint.y;
+                    float dir = math.sign(target - current);
+                    float deltaDensity = dir * step;
+                    float next = current + deltaDensity;
+
+                    if ((dir > 0f && next > target) || (dir < 0f && next < target))
+                        next = target;
+
+                    densities[index] = next;
+                    break;
+                }
+            }
         }
     }
 }
