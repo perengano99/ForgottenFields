@@ -14,12 +14,19 @@ void TriplanarSplat_float(UnityTexture2DArray TexArray, float3 WorldPos, float3 
     float2 uvZ = WorldPos.xy;
 
     // Muestreo del Texture2DArray
-    float4 colX = SAMPLE_TEXTURE2D_ARRAY(TexArray.tex, TexArray.samplerstate, uvX, Index);
-    float4 colY = SAMPLE_TEXTURE2D_ARRAY(TexArray.tex, TexArray.samplerstate, uvY, Index);
-    float4 colZ = SAMPLE_TEXTURE2D_ARRAY(TexArray.tex, TexArray.samplerstate, uvZ, Index);
+    float4 col = float4(0, 0, 0, 0);
+
+    if (blend.x > 0.001)
+        col += SAMPLE_TEXTURE2D_ARRAY(TexArray.tex, TexArray.samplerstate, uvX, Index) * blend.x;
+
+    if (blend.y > 0.001)
+        col += SAMPLE_TEXTURE2D_ARRAY(TexArray.tex, TexArray.samplerstate, uvY, Index) * blend.y;
+
+    if (blend.z > 0.001)
+        col += SAMPLE_TEXTURE2D_ARRAY(TexArray.tex, TexArray.samplerstate, uvZ, Index) * blend.z;
 
     // Mezcla final
-    OutColor = colX * blend.x + colY * blend.y + colZ * blend.z;
+    OutColor = col;
 }
 
 #endif

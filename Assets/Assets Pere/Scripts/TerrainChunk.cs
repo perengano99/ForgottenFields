@@ -1,15 +1,11 @@
+using System.Runtime.InteropServices;
 using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
-
-// TODO: Las brochas no funcionan bien. Primeramente, deberian existir dos tipos de brocha: Editar terreno y pintar terreno (pintar es establecer material).
-// Además, la aplicación de brochas debería ser un proceso separado que modifique el campo escalar y luego ejecute un job de actualización de malla, en lugar de intentar modificar la malla directamente desde el job de brocha.
-// Los tipos de brocha no funcionan como se espera. la funcion Vertical, debe jalar desde la base del terreno hacia arriba o abajo, impidiendo que queden "flotando" bloques en el aire. Actualmente, la brocha es una esfera que modifica el terreno de forma uniforme, lo que no es ideal para crear paredes verticales o suelos planos. Se necesita implementar una lógica de brocha que considere la dirección y la forma del terreno para aplicar modificaciones más precisas y controladas.
-// Faltan shapes de brocha como box, irregular plane (extrulla de a manera de accidente natural como una montaña o cerro en lugar de una figura geometrica regular), actualmente el modo ruido crea literalmente ruido.
-// La fuerza de la brocha no se aplica de manera efectiva, es muy fuerte y sensible. Ademas, es muy suave y debe mantenerse el aspecto low poly.
-// El modo extraccion, subtraccion, suavizado y aplanado no deben ser modos seleccionables en inspector, sino combinaciones del teclado + lmb. Por ejemplo, Shift + LMB para aplanar, Ctrl + LMB para suavizar, Alt + LMB para subtraccion, y sin modificadores para extraccion. Esto permitirá una edición más fluida y rápida sin necesidad de cambiar constantemente entre modos en el inspector.
+using UnityEngine.Rendering;
 
 public struct Triangle {
     public float3 v0;
@@ -24,6 +20,13 @@ public enum BrushType {
     SphereAdd,
     SphereSubtract,
     Flatten
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct TerrainVertex {
+    public float3 position;
+    public float3 normal;
+    public float2 uv;
 }
 
 [ExecuteAlways]
@@ -53,12 +56,18 @@ public class TerrainChunk : MonoBehaviour {
     private NativeArray<int> nativeEdgeTable;
     private NativeArray<int> nativeTriTable;
 
-    // === BUFFERS DE MALLA ===
-    private NativeList<Vector3> meshVertices;
-    private NativeList<int> meshTriangles;
-    private NativeList<Vector2> meshUVs;
+    // === BUFFERS DE GENERACIÓN ===
+    private NativeArray<int> cellTriangleCounts;
+    private NativeArray<int> cellVertexOffsets;
+    private NativeReference<int> totalTriangleCount;
 
     private Mesh chunkMesh;
+
+    private static readonly VertexAttributeDescriptor[] VertexLayout = {
+        new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3, 0),
+        new VertexAttributeDescriptor(VertexAttribute.Normal, VertexAttributeFormat.Float32, 3, 0),
+        new VertexAttributeDescriptor(VertexAttribute.TexCoord0, VertexAttributeFormat.Float32, 2, 0)
+    };
 
     private bool needsReinitialization;
     private bool validationInitialized;
@@ -83,7 +92,8 @@ public class TerrainChunk : MonoBehaviour {
             registry.InitializeIfNeeded();
             if (MaterialRegistry.Instance == null)
                 return false;
-        } else MaterialRegistry.Instance.InitializeIfNeeded();
+        }
+        else MaterialRegistry.Instance.InitializeIfNeeded();
 
         return MaterialRegistry.Instance.RegistryData.IsCreated;
     }
@@ -98,6 +108,7 @@ public class TerrainChunk : MonoBehaviour {
         }
 
         int pointCount = (gridSizeX + 1) * (gridSizeY + 1) * (gridSizeZ + 1);
+        int cellCount = gridSizeX * gridSizeY * gridSizeZ;
 
         if (densities.IsCreated) densities.Dispose();
         if (metadata.IsCreated) metadata.Dispose();
@@ -105,9 +116,9 @@ public class TerrainChunk : MonoBehaviour {
         if (islandCount.IsCreated) islandCount.Dispose();
         if (nativeEdgeTable.IsCreated) nativeEdgeTable.Dispose();
         if (nativeTriTable.IsCreated) nativeTriTable.Dispose();
-        if (meshVertices.IsCreated) meshVertices.Dispose();
-        if (meshTriangles.IsCreated) meshTriangles.Dispose();
-        if (meshUVs.IsCreated) meshUVs.Dispose();
+        if (cellTriangleCounts.IsCreated) cellTriangleCounts.Dispose();
+        if (cellVertexOffsets.IsCreated) cellVertexOffsets.Dispose();
+        if (totalTriangleCount.IsCreated) totalTriangleCount.Dispose();
 
         densities = new NativeArray<float>(pointCount, Allocator.Persistent);
         metadata = new NativeArray<byte>(pointCount, Allocator.Persistent);
@@ -116,10 +127,9 @@ public class TerrainChunk : MonoBehaviour {
 
         nativeEdgeTable = new NativeArray<int>(256, Allocator.Persistent);
         nativeTriTable = new NativeArray<int>(256 * 16, Allocator.Persistent);
-
-        meshVertices = new NativeList<Vector3>(Allocator.Persistent);
-        meshTriangles = new NativeList<int>(Allocator.Persistent);
-        meshUVs = new NativeList<Vector2>(Allocator.Persistent);
+        cellTriangleCounts = new NativeArray<int>(cellCount, Allocator.Persistent);
+        cellVertexOffsets = new NativeArray<int>(cellCount, Allocator.Persistent);
+        totalTriangleCount = new NativeReference<int>(Allocator.Persistent);
 
         for (int i = 0; i < 256; i++)
             nativeEdgeTable[i] = MarchingCubesTables.EdgeTable[i];
@@ -150,17 +160,17 @@ public class TerrainChunk : MonoBehaviour {
         if (islandCount.IsCreated) islandCount.Dispose();
         if (nativeEdgeTable.IsCreated) nativeEdgeTable.Dispose();
         if (nativeTriTable.IsCreated) nativeTriTable.Dispose();
-        if (meshVertices.IsCreated) meshVertices.Dispose();
-        if (meshTriangles.IsCreated) meshTriangles.Dispose();
-        if (meshUVs.IsCreated) meshUVs.Dispose();
+        if (cellTriangleCounts.IsCreated) cellTriangleCounts.Dispose();
+        if (cellVertexOffsets.IsCreated) cellVertexOffsets.Dispose();
+        if (totalTriangleCount.IsCreated) totalTriangleCount.Dispose();
         if (chunkMesh != null) DestroyImmediate(chunkMesh);
         isInitialized = false;
     }
 
     private void OnDestroy() {
-        if (meshVertices.IsCreated) meshVertices.Dispose();
-        if (meshTriangles.IsCreated) meshTriangles.Dispose();
-        if (meshUVs.IsCreated) meshUVs.Dispose();
+        if (cellTriangleCounts.IsCreated) cellTriangleCounts.Dispose();
+        if (cellVertexOffsets.IsCreated) cellVertexOffsets.Dispose();
+        if (totalTriangleCount.IsCreated) totalTriangleCount.Dispose();
     }
 
     private void OnValidate() {
@@ -190,15 +200,15 @@ public class TerrainChunk : MonoBehaviour {
             OnEnable();
             needsReinitialization = false;
         }
- 
-         if (Application.isEditor) {
-             if (!wasPlaying && Application.isPlaying) CaptureEditorSnapshot();
-             if (wasPlaying && !Application.isPlaying) RestoreEditorSnapshot();
-             wasPlaying = Application.isPlaying;
-         }
- 
-         if (!Application.isEditor || Application.isPlaying) return;
-     }
+
+        if (Application.isEditor) {
+            if (!wasPlaying && Application.isPlaying) CaptureEditorSnapshot();
+            if (wasPlaying && !Application.isPlaying) RestoreEditorSnapshot();
+            wasPlaying = Application.isPlaying;
+        }
+
+        if (!Application.isEditor || Application.isPlaying) return;
+    }
 
     private void CaptureEditorSnapshot() {
         if (!densities.IsCreated) return;
@@ -271,40 +281,69 @@ public class TerrainChunk : MonoBehaviour {
     public void UpdateMesh() {
         if (!EnsureRegistryIsReady()) return;
         if (!densities.IsCreated || !metadata.IsCreated || !nativeEdgeTable.IsCreated || !nativeTriTable.IsCreated) return;
-        if (!meshVertices.IsCreated || !meshTriangles.IsCreated || !meshUVs.IsCreated) return;
+        if (!cellTriangleCounts.IsCreated || !cellVertexOffsets.IsCreated || !totalTriangleCount.IsCreated) return;
 
         if (chunkMesh == null) {
             chunkMesh = new Mesh { name = "VoxelChunk" };
             chunkMesh.hideFlags = HideFlags.DontSave;
         }
 
-        // === LIMPIAR BUFFERS ===
-        meshVertices.Clear();
-        meshTriangles.Clear();
-        meshUVs.Clear();
+        int3 gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ);
+        int cellCount = gridSizeX * gridSizeY * gridSizeZ;
 
-        // === CONFIGURAR Y EJECUTAR JOB ===
-        MarchingCubesJob job = new MarchingCubesJob {
+        CountTrianglesJob countJob = new CountTrianglesJob {
+            densities = densities,
+            edgeTable = nativeEdgeTable,
+            triTable = nativeTriTable,
+            gridSize = gridSize,
+            cellTriangleCounts = cellTriangleCounts,
+            totalTriangleCount = totalTriangleCount
+        };
+        countJob.Schedule().Complete();
+
+        PrefixSumJob prefixJob = new PrefixSumJob {
+            cellTriangleCounts = cellTriangleCounts,
+            cellVertexOffsets = cellVertexOffsets,
+            totalTriangleCount = totalTriangleCount
+        };
+        prefixJob.Schedule().Complete();
+
+        int triangleCount = totalTriangleCount.Value;
+        int vertexCount = triangleCount * 3;
+        int indexCount = vertexCount;
+
+        var meshDataArray = Mesh.AllocateWritableMeshData(1);
+        var meshData = meshDataArray[0];
+
+        meshData.SetVertexBufferParams(vertexCount, VertexLayout);
+        meshData.SetIndexBufferParams(indexCount, IndexFormat.UInt32);
+
+        GenerateMeshJob meshJob = new GenerateMeshJob {
             densities = densities,
             metadata = metadata,
             edgeTable = nativeEdgeTable,
             triTable = nativeTriTable,
-            gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
+            gridSize = gridSize,
             voxelSize = voxelSize,
-            outVertices = meshVertices,
-            outTriangles = meshTriangles,
-            outUVs = meshUVs
+            cellTriangleCounts = cellTriangleCounts,
+            cellVertexOffsets = cellVertexOffsets,
+            meshData = meshData
         };
+        meshJob.Schedule().Complete();
 
-        job.Schedule().Complete();
+        meshData.subMeshCount = 1;
+        meshData.SetSubMesh(0, new SubMeshDescriptor(0, indexCount) {
+            vertexCount = vertexCount,
+            bounds = new Bounds(
+                new Vector3(gridSizeX, gridSizeY, gridSizeZ) * (voxelSize * 0.5f),
+                new Vector3(gridSizeX, gridSizeY, gridSizeZ) * voxelSize)
+        }, MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
 
-        // === VOLCAR A MESH ===
-        chunkMesh.Clear();
-        chunkMesh.SetVertices(meshVertices.AsArray());
-        chunkMesh.SetIndices(meshTriangles.AsArray(), MeshTopology.Triangles, 0);
-        chunkMesh.SetUVs(1, meshUVs.AsArray());
-        chunkMesh.RecalculateNormals();
-        chunkMesh.RecalculateBounds();
+        chunkMesh.Clear(false);
+        Mesh.ApplyAndDisposeWritableMeshData(meshDataArray, chunkMesh, MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
+        chunkMesh.bounds = new Bounds(
+            new Vector3(gridSizeX, gridSizeY, gridSizeZ) * (voxelSize * 0.5f),
+            new Vector3(gridSizeX, gridSizeY, gridSizeZ) * voxelSize);
 
         GetComponent<MeshFilter>().sharedMesh = chunkMesh;
         MeshCollider mc = GetComponent<MeshCollider>();
@@ -320,76 +359,7 @@ public class TerrainChunk : MonoBehaviour {
             renderer.SetPropertyBlock(propBlock);
         }
     }
-    // === CSG (DEFORMACIÓN VOLUMÉTRICA) — GESTIONADO EXTERNAMENTE ===
-    // public void ModifyTerrain(Vector3 worldHitPoint, float brushRadius, float brushStrength, BrushType brushType, byte materialID = 0) {
-    //     if (!densities.IsCreated || voxelSize <= 0f || brushRadius <= 0f) return;
-    //     Vector3 localHitPoint = worldHitPoint - transform.position;
-    //     ModifyTerrainJob job = new ModifyTerrainJob {
-    //         densities = densities,
-    //         metadata = metadata,
-    //         gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
-    //         voxelSize = voxelSize,
-    //         localHitPoint = new float3(localHitPoint.x, localHitPoint.y, localHitPoint.z),
-    //         radius = brushRadius,
-    //         strength = brushStrength,
-    //         brushType = brushType,
-    //         brushMaterialID = materialID
-    //     };
-    //     job.Schedule(densities.Length, 64).Complete();
-    //     if (labels.IsCreated && islandCount.IsCreated) {
-    //         for (int i = 0; i < labels.Length; i++) labels[i] = 0;
-    //         GravityCheckJob gravityJob = new GravityCheckJob {
-    //             densities = densities,
-    //             gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ),
-    //             labels = labels,
-    //             islandCount = islandCount,
-    //             isPlayMode = Application.isPlaying
-    //         };
-    //         gravityJob.Schedule().Complete();
-    //     }
-    //     UpdateMesh();
-    // }
 
-    // [BurstCompile]
-    // private struct ModifyTerrainJob : IJobParallelFor {
-    //     public NativeArray<float> densities;
-    //     public NativeArray<byte> metadata;
-    //     public int3 gridSize;
-    //     public float voxelSize;
-    //     public float3 localHitPoint;
-    //     public float radius;
-    //     public float strength;
-    //     public BrushType brushType;
-    //     public byte brushMaterialID;
-    //     public void Execute(int index) {
-    //         int pointsX = gridSize.x + 1;
-    //         int pointsY = gridSize.y + 1;
-    //         int planeSize = pointsX * pointsY;
-    //         int z = index / planeSize;
-    //         int rem = index - z * planeSize;
-    //         int y = rem / pointsX;
-    //         int x = rem - y * pointsX;
-    //         if (x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
-    //         float3 nodePos = new float3(x, y, z) * voxelSize;
-    //         float distance = math.distance(nodePos, localHitPoint);
-    //         if (distance > radius) return;
-    //         float falloff = math.smoothstep(radius, 0f, distance);
-    //         switch (brushType) {
-    //             case BrushType.SphereAdd:
-    //                 densities[index] -= strength * falloff;
-    //                 if (densities[index] < 0f) metadata[index] = brushMaterialID;
-    //                 break;
-    //             case BrushType.SphereSubtract:
-    //                 densities[index] += strength * falloff;
-    //                 break;
-    //             case BrushType.Flatten:
-    //                 float dy = (y * voxelSize) - localHitPoint.y;
-    //                 densities[index] = math.lerp(densities[index], dy, strength * falloff);
-    //                 if (densities[index] < 0f) metadata[index] = brushMaterialID;
-    //                 break;
-    //         }
-    //     }
-    // }
     // === NOTA DE ARQUITECTURA ===
     // Nota: Mecánicas de debris y aplastamiento removidas por diseño.
     // Pendiente: Implementar shading de partículas (vfx_shading_particles) para desprendimiento visual.
@@ -428,9 +398,8 @@ public class TerrainChunk : MonoBehaviour {
         public int3 gridSize;
         public float voxelSize;
 
-        public NativeList<Vector3> outVertices;
-        public NativeList<int> outTriangles;
-        public NativeList<Vector2> outUVs;
+        public NativeArray<int> outCellTriangleCounts;
+        public NativeArray<int> outCellVertexOffsets;
 
         private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
             float denom = d0 - d1;
@@ -518,23 +487,6 @@ public class TerrainChunk : MonoBehaviour {
                 for (int i = 0; i < 16; i += 3) {
                     int t0 = triTable[triBase + i];
                     if (t0 == -1) break;
-
-                    int t1 = triTable[triBase + i + 1];
-                    int t2 = triTable[triBase + i + 2];
-
-                    int baseVert = outVertices.Length;
-
-                    outVertices.Add(new Vector3(ev[t0].x, ev[t0].y, ev[t0].z));
-                    outVertices.Add(new Vector3(ev[t2].x, ev[t2].y, ev[t2].z));
-                    outVertices.Add(new Vector3(ev[t1].x, ev[t1].y, ev[t1].z));
-
-                    outTriangles.Add(baseVert);
-                    outTriangles.Add(baseVert + 1);
-                    outTriangles.Add(baseVert + 2);
-
-                    outUVs.Add(new Vector2(matID, 0f));
-                    outUVs.Add(new Vector2(matID, 0f));
-                    outUVs.Add(new Vector2(matID, 0f));
                 }
             }
         }
@@ -708,6 +660,235 @@ public class TerrainChunk : MonoBehaviour {
             islandCount.Value = currentIslandID - 2;
 
             queue.Dispose();
+        }
+    }
+
+    [BurstCompile]
+    private struct CountTrianglesJob : IJob {
+        [ReadOnly] public NativeArray<float> densities;
+        [ReadOnly] public NativeArray<int> edgeTable;
+        [ReadOnly] public NativeArray<int> triTable;
+        public int3 gridSize;
+        public NativeArray<int> cellTriangleCounts;
+        public NativeReference<int> totalTriangleCount;
+
+        public void Execute() {
+            int pointsX = gridSize.x + 1;
+            int pointsY = gridSize.y + 1;
+            int planeSize = pointsX * pointsY;
+            int total = 0;
+
+            for (int z = 0; z < gridSize.z; z++) {
+                for (int y = 0; y < gridSize.y; y++) {
+                    for (int x = 0; x < gridSize.x; x++) {
+                        int cellIndex = x + y * gridSize.x + z * gridSize.x * gridSize.y;
+                        int i000 = x + y * pointsX + z * planeSize;
+                        int i100 = i000 + 1;
+                        int i010 = i000 + pointsX;
+                        int i110 = i010 + 1;
+                        int i001 = i000 + planeSize;
+                        int i101 = i001 + 1;
+                        int i011 = i001 + pointsX;
+                        int i111 = i011 + 1;
+
+                        int cubeIndex = 0;
+                        if (densities[i000] < 0f) cubeIndex |= 1;
+                        if (densities[i100] < 0f) cubeIndex |= 2;
+                        if (densities[i110] < 0f) cubeIndex |= 4;
+                        if (densities[i010] < 0f) cubeIndex |= 8;
+                        if (densities[i001] < 0f) cubeIndex |= 16;
+                        if (densities[i101] < 0f) cubeIndex |= 32;
+                        if (densities[i111] < 0f) cubeIndex |= 64;
+                        if (densities[i011] < 0f) cubeIndex |= 128;
+
+                        if (edgeTable[cubeIndex] == 0) {
+                            cellTriangleCounts[cellIndex] = 0;
+                            continue;
+                        }
+
+                        int triCount = 0;
+                        int triBase = cubeIndex * 16;
+                        for (int i = 0; i < 16; i += 3) {
+                            if (triTable[triBase + i] == -1) break;
+                            triCount++;
+                        }
+
+                        cellTriangleCounts[cellIndex] = triCount;
+                        total += triCount;
+                    }
+                }
+            }
+
+            totalTriangleCount.Value = total;
+        }
+    }
+
+    [BurstCompile]
+    private struct PrefixSumJob : IJob {
+        [ReadOnly] public NativeArray<int> cellTriangleCounts;
+        public NativeArray<int> cellVertexOffsets;
+        public NativeReference<int> totalTriangleCount;
+
+        public void Execute() {
+            int offset = 0;
+            for (int i = 0; i < cellTriangleCounts.Length; i++) {
+                cellVertexOffsets[i] = offset;
+                offset += cellTriangleCounts[i] * 3;
+            }
+
+            totalTriangleCount.Value = offset / 3;
+        }
+    }
+
+    [BurstCompile]
+    private struct GenerateMeshJob : IJob {
+        [ReadOnly] public NativeArray<float> densities;
+        [ReadOnly] public NativeArray<byte> metadata;
+        [ReadOnly] public NativeArray<int> edgeTable;
+        [ReadOnly] public NativeArray<int> triTable;
+        [ReadOnly] public NativeArray<int> cellTriangleCounts;
+        [ReadOnly] public NativeArray<int> cellVertexOffsets;
+
+        public int3 gridSize;
+        public float voxelSize;
+
+        [NativeDisableContainerSafetyRestriction] public Mesh.MeshData meshData;
+
+        private float SampleDensityClamped(int x, int y, int z) {
+            x = math.clamp(x, 0, gridSize.x);
+            y = math.clamp(y, 0, gridSize.y);
+            z = math.clamp(z, 0, gridSize.z);
+
+            int pointsX = gridSize.x + 1;
+            int pointsY = gridSize.y + 1;
+            int index = x + y * pointsX + z * pointsX * pointsY;
+            return densities[index];
+        }
+
+        private float3 SampleGradient(float3 pos) {
+            float inv = 1f / voxelSize;
+            int x = (int)math.round(pos.x * inv);
+            int y = (int)math.round(pos.y * inv);
+            int z = (int)math.round(pos.z * inv);
+
+            float dx = SampleDensityClamped(x + 1, y, z) - SampleDensityClamped(x - 1, y, z);
+            float dy = SampleDensityClamped(x, y + 1, z) - SampleDensityClamped(x, y - 1, z);
+            float dz = SampleDensityClamped(x, y, z + 1) - SampleDensityClamped(x, y, z - 1);
+
+            float3 normal = math.normalize(new float3(dx, dy, dz));
+            return math.any(!math.isfinite(normal)) ? math.up() : normal;
+        }
+
+        private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
+            float denom = d0 - d1;
+            float t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
+            t = math.clamp(t, 0f, 1f);
+            return math.lerp(p0, p1, t);
+        }
+
+        private static void WriteVertex(NativeArray<TerrainVertex> vertices, NativeArray<uint> indices, int vertexIndex, float3 position, float3 normal, byte matID) {
+            vertices[vertexIndex] = new TerrainVertex {
+                position = position,
+                normal = normal,
+                uv = new float2(matID, 0f)
+            };
+            indices[vertexIndex] = (uint)vertexIndex;
+        }
+
+        public void Execute() {
+            NativeArray<TerrainVertex> vertices = meshData.GetVertexData<TerrainVertex>();
+            NativeArray<uint> indices = meshData.GetIndexData<uint>();
+
+            int pointsX = gridSize.x + 1;
+            int pointsY = gridSize.y + 1;
+            int planeSize = pointsX * pointsY;
+
+            for (int z = 0; z < gridSize.z; z++) {
+                for (int y = 0; y < gridSize.y; y++) {
+                    for (int x = 0; x < gridSize.x; x++) {
+                        int cellIndex = x + y * gridSize.x + z * gridSize.x * gridSize.y;
+                        int triCount = cellTriangleCounts[cellIndex];
+                        if (triCount == 0) continue;
+
+                        int i000 = x + y * pointsX + z * planeSize;
+                        int i100 = i000 + 1;
+                        int i010 = i000 + pointsX;
+                        int i110 = i010 + 1;
+                        int i001 = i000 + planeSize;
+                        int i101 = i001 + 1;
+                        int i011 = i001 + pointsX;
+                        int i111 = i011 + 1;
+
+                        byte matID = metadata[i000];
+
+                        float d000 = densities[i000];
+                        float d100 = densities[i100];
+                        float d010 = densities[i010];
+                        float d110 = densities[i110];
+                        float d001 = densities[i001];
+                        float d101 = densities[i101];
+                        float d011 = densities[i011];
+                        float d111 = densities[i111];
+
+                        int cubeIndex = 0;
+                        if (d000 < 0f) cubeIndex |= 1;
+                        if (d100 < 0f) cubeIndex |= 2;
+                        if (d110 < 0f) cubeIndex |= 4;
+                        if (d010 < 0f) cubeIndex |= 8;
+                        if (d001 < 0f) cubeIndex |= 16;
+                        if (d101 < 0f) cubeIndex |= 32;
+                        if (d111 < 0f) cubeIndex |= 64;
+                        if (d011 < 0f) cubeIndex |= 128;
+
+                        int edgeMask = edgeTable[cubeIndex];
+                        if (edgeMask == 0) continue;
+
+                        float3 basePos = new float3(x, y, z) * voxelSize;
+                        float3 p000 = basePos;
+                        float3 p100 = basePos + new float3(voxelSize, 0f, 0f);
+                        float3 p110 = basePos + new float3(voxelSize, voxelSize, 0f);
+                        float3 p010 = basePos + new float3(0f, voxelSize, 0f);
+                        float3 p001 = basePos + new float3(0f, 0f, voxelSize);
+                        float3 p101 = basePos + new float3(voxelSize, 0f, voxelSize);
+                        float3 p111 = basePos + new float3(voxelSize, voxelSize, voxelSize);
+                        float3 p011 = basePos + new float3(0f, voxelSize, voxelSize);
+
+                        FixedList512Bytes<float3> ev = default;
+                        for (int i = 0; i < 12; i++) ev.Add(float3.zero);
+
+                        if ((edgeMask & 1) != 0) ev[0] = InterpolateIso(p000, p100, d000, d100);
+                        if ((edgeMask & 2) != 0) ev[1] = InterpolateIso(p100, p110, d100, d110);
+                        if ((edgeMask & 4) != 0) ev[2] = InterpolateIso(p110, p010, d110, d010);
+                        if ((edgeMask & 8) != 0) ev[3] = InterpolateIso(p010, p000, d010, d000);
+                        if ((edgeMask & 16) != 0) ev[4] = InterpolateIso(p001, p101, d001, d101);
+                        if ((edgeMask & 32) != 0) ev[5] = InterpolateIso(p101, p111, d101, d111);
+                        if ((edgeMask & 64) != 0) ev[6] = InterpolateIso(p111, p011, d111, d011);
+                        if ((edgeMask & 128) != 0) ev[7] = InterpolateIso(p011, p001, d011, d001);
+                        if ((edgeMask & 256) != 0) ev[8] = InterpolateIso(p000, p001, d000, d001);
+                        if ((edgeMask & 512) != 0) ev[9] = InterpolateIso(p100, p101, d100, d101);
+                        if ((edgeMask & 1024) != 0) ev[10] = InterpolateIso(p110, p111, d110, d111);
+                        if ((edgeMask & 2048) != 0) ev[11] = InterpolateIso(p010, p011, d010, d011);
+
+                        int triBase = cubeIndex * 16;
+                        int writeOffset = cellVertexOffsets[cellIndex];
+                        int localTri = 0;
+
+                        for (int i = 0; i < 16; i += 3) {
+                            int t0 = triTable[triBase + i];
+                            if (t0 == -1) break;
+
+                            int t1 = triTable[triBase + i + 1];
+                            int t2 = triTable[triBase + i + 2];
+
+                            int baseVertex = writeOffset + localTri * 3;
+                            WriteVertex(vertices, indices, baseVertex, ev[t0], SampleGradient(ev[t0]), matID);
+                            WriteVertex(vertices, indices, baseVertex + 1, ev[t2], SampleGradient(ev[t2]), matID);
+                            WriteVertex(vertices, indices, baseVertex + 2, ev[t1], SampleGradient(ev[t1]), matID);
+                            localTri++;
+                        }
+                    }
+                }
+            }
         }
     }
 }
