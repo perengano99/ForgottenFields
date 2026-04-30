@@ -14,6 +14,20 @@ public class DynamicTerrainManager : MonoBehaviour {
     [SerializeField] private float voxelSize = 1f;
     [SerializeField] private Material terrainMaterial;
 
+    [System.Serializable]
+    private struct ChunkSnapshot {
+        public int x;
+        public int y;
+        public int z;
+        public float[] densities;
+        public byte[] metadata;
+    }
+
+    [SerializeField, HideInInspector] private ChunkSnapshot[] editorToPlaySnapshot;
+
+    private bool wasPlaying;
+    private bool pendingApplyEditorSnapshotInPlay;
+
     // === ESTADO DEL PINCEL ===
     [Header("Pincel")]
     public bool isEditing = false;
@@ -33,9 +47,39 @@ public class DynamicTerrainManager : MonoBehaviour {
     public int WorldSizeY => worldSizeY;
     public int WorldSizeZ => worldSizeZ;
 
-    private void OnEnable() => RebuildChunks();
+    private void OnEnable() {
+        RebuildChunks();
 
-    private void OnDisable() => DestroyChunks();
+        if (Application.isPlaying && pendingApplyEditorSnapshotInPlay) {
+            ApplyEditorSnapshotToChunks();
+            pendingApplyEditorSnapshotInPlay = false;
+        }
+
+        wasPlaying = Application.isPlaying;
+    }
+
+    private void OnDisable() {
+        // === FLUJO ESTRICTO: EDITOR -> JUEGO ===
+        if (Application.isEditor && !Application.isPlaying) CaptureEditorSnapshot();
+        DestroyChunks();
+    }
+
+    private void Update() {
+        if (!Application.isEditor) return;
+
+        if (!wasPlaying && Application.isPlaying) {
+            pendingApplyEditorSnapshotInPlay = true;
+            RebuildChunks();
+            ApplyEditorSnapshotToChunks();
+            pendingApplyEditorSnapshotInPlay = false;
+        }
+
+        // === NO PERSISTIR JUEGO -> EDITOR ===
+        if (wasPlaying && !Application.isPlaying)
+            RebuildChunks();
+
+        wasPlaying = Application.isPlaying;
+    }
 
     // === CONSTRUCCIÓN DE CHUNKS ===
     private void RebuildChunks() {
@@ -133,7 +177,7 @@ public class DynamicTerrainManager : MonoBehaviour {
         hitPoint = Vector3.zero;
         hitChunk = null;
 
-        if (!Physics.Raycast(ray, out RaycastHit hit)) return false;
+        if (!Physics.Raycast(ray, out RaycastHit hit)) return false;  
 
         Collider col = hit.collider;
         TerrainChunk chunk = col.GetComponent<TerrainChunk>();
@@ -142,5 +186,44 @@ public class DynamicTerrainManager : MonoBehaviour {
         hitPoint = hit.point;
         hitChunk = chunk;
         return true;
+    }
+
+    // === SNAPSHOT EDITOR -> JUEGO ===
+    private void CaptureEditorSnapshot() {
+        if (chunks == null) return;
+
+        int total = worldSizeX * worldSizeY * worldSizeZ;
+        editorToPlaySnapshot = new ChunkSnapshot[total];
+
+        int idx = 0;
+        for (int x = 0; x < worldSizeX; x++) {
+            for (int y = 0; y < worldSizeY; y++) {
+                for (int z = 0; z < worldSizeZ; z++) {
+                    ChunkSnapshot snap = new ChunkSnapshot { x = x, y = y, z = z };
+                    TerrainChunk chunk = chunks[x, y, z];
+
+                    if (chunk != null)
+                        chunk.TryExportTerrainData(out snap.densities, out snap.metadata);
+
+                    editorToPlaySnapshot[idx++] = snap;
+                }
+            }
+        }
+    }
+
+    private void ApplyEditorSnapshotToChunks() {
+        if (chunks == null || editorToPlaySnapshot == null || editorToPlaySnapshot.Length == 0) return;
+
+        for (int i = 0; i < editorToPlaySnapshot.Length; i++) {
+            ChunkSnapshot snap = editorToPlaySnapshot[i];
+            if (snap.x < 0 || snap.y < 0 || snap.z < 0) continue;
+            if (snap.x >= worldSizeX || snap.y >= worldSizeY || snap.z >= worldSizeZ) continue;
+
+            TerrainChunk chunk = chunks[snap.x, snap.y, snap.z];
+            if (chunk == null) continue;
+            if (!chunk.TryImportTerrainData(snap.densities, snap.metadata)) continue;
+
+            chunk.UpdateMesh();
+        }
     }
 }

@@ -50,6 +50,37 @@ public class TerrainChunk : MonoBehaviour {
     public NativeArray<float> Densities => densities;
     public NativeArray<byte> Metadata => metadata;
 
+    public bool TryExportTerrainData(out float[] outDensities, out byte[] outMetadata) {
+        outDensities = null;
+        outMetadata = null;
+
+        if (!densities.IsCreated || !metadata.IsCreated) return false;
+
+        int len = densities.Length;
+        outDensities = new float[len];
+        outMetadata = new byte[len];
+
+        for (int i = 0; i < len; i++) {
+            outDensities[i] = densities[i];
+            outMetadata[i] = metadata[i];
+        }
+
+        return true;
+    }
+
+    public bool TryImportTerrainData(float[] inDensities, byte[] inMetadata) {
+        if (!densities.IsCreated || !metadata.IsCreated) return false;
+        if (inDensities == null || inMetadata == null) return false;
+        if (inDensities.Length != densities.Length || inMetadata.Length != metadata.Length) return false;
+
+        for (int i = 0; i < densities.Length; i++) {
+            densities[i] = inDensities[i];
+            metadata[i] = inMetadata[i];
+        }
+
+        return true;
+    }
+
     [SerializeField, HideInInspector] private float[] persistedDensities;
 
     // === VARIABLES DE TABLA ===
