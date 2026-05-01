@@ -29,13 +29,12 @@ public static class TerrainSculptor {
         byte materialID,
         bool isVertical = false) {
 
-        if (!densities.IsCreated || !metadata.IsCreated || radius <= 0f || voxelSize <= 0f) return;
+        if (!densities.IsCreated || radius <= 0f || voxelSize <= 0f) return;
 
         float dt = Time.deltaTime > 0f ? Time.deltaTime : (1f / 60f);
 
         SculptJob job = new SculptJob {
             densities = densities,
-            metadata = metadata,
             gridSize = gridSize,
             voxelSize = voxelSize,
             hitPoint = new float3(localHitPoint.x, localHitPoint.y, localHitPoint.z),
@@ -43,7 +42,6 @@ public static class TerrainSculptor {
             strength = strength,
             brushShape = shape,
             brushType = type,
-            materialID = materialID,
             isVertical = isVertical,
             deltaTime = dt,
             lowPolyStepFactor = 3.5f,
@@ -109,7 +107,6 @@ public static class TerrainSculptor {
     [BurstCompile]
     private struct SculptJob : IJobParallelFor {
         public NativeArray<float> densities;
-        public NativeArray<byte> metadata;
 
         public int3 gridSize;
         public float voxelSize;
@@ -120,7 +117,6 @@ public static class TerrainSculptor {
 
         public BrushShape brushShape;
         public BrushType brushType;
-        public byte materialID;
         public bool isVertical;
 
         public float deltaTime;
@@ -168,9 +164,6 @@ public static class TerrainSculptor {
             if (!affects) return;
 
             ApplyQuantizedDensity(index, voxelPos, shapeFactor);
-
-            if (densities[index] < 0f)
-                metadata[index] = materialID;
         }
 
         // === EVALUACIÓN ESPACIAL ===

@@ -4,9 +4,9 @@ using UnityEngine;
 public enum EditMode { Sculpt, Paint }
 public enum SculptMode { Add, Subtract, Flatten, Smooth }
 
-// TODO: El modo sculpt no debe asignar material, pero el paint sí. Separar lógica de ambos modos en métodos distintos para evitar confusiones y errores futuros.
-// El sistema vertical no funciona como se espera. El objetivo es que esculpa de manera vertical, sin importar la orentacion de la vista o el punto de impacto. Tampoco debe funcionar en un radio de esfera, sino como un plano desde el punto vertical.
-// El esculpido en general sigue siendo muy suave y no genera terreno estilo low poly.
+// -[] El modo sculpt no debe asignar material, pero el paint sí. Separar lógica de ambos modos en métodos distintos para evitar confusiones y errores futuros.
+// -[] El sistema vertical no funciona como se espera. El objetivo es que esculpa de manera vertical, sin importar la orentacion de la vista o el punto de impacto. Tampoco debe funcionar en un radio de esfera, sino como un plano desde el punto vertical.
+// -[] El esculpido en general sigue siendo muy suave y no genera terreno estilo low poly.
 
 [ExecuteAlways]
 public class DynamicTerrainManager : MonoBehaviour {
