@@ -32,9 +32,11 @@ public static class TerrainSculptor {
         if (!densities.IsCreated || radius <= 0f || voxelSize <= 0f) return;
 
         float dt = Time.deltaTime > 0f ? Time.deltaTime : (1f / 60f);
+        NativeArray<float> sourceDensities = new NativeArray<float>(densities, Allocator.TempJob);
 
         SculptJob job = new SculptJob {
             densities = densities,
+            sourceDensities = sourceDensities,
             gridSize = gridSize,
             voxelSize = voxelSize,
             hitPoint = new float3(localHitPoint.x, localHitPoint.y, localHitPoint.z),
@@ -46,10 +48,12 @@ public static class TerrainSculptor {
             deltaTime = dt,
             lowPolyStepFactor = 3.5f,
             noiseScale = 0.18f,
-            noiseAmplitude = 1.0f
+            noiseAmplitude = 1.0f,
+            isoLevel = 0f
         };
 
-        job.Schedule(densities.Length, 64).Complete();
+        job.Schedule().Complete();
+        sourceDensities.Dispose();
     }
 
     // === PINTURA DE MATERIALES ===
@@ -105,8 +109,10 @@ public static class TerrainSculptor {
     }
 
     [BurstCompile]
-    private struct SculptJob : IJobParallelFor {
+    private struct SculptJob : IJob {
         public NativeArray<float> densities;
+
+        [ReadOnly] public NativeArray<float> sourceDensities;
 
         public int3 gridSize;
         public float voxelSize;
@@ -123,47 +129,52 @@ public static class TerrainSculptor {
         public float lowPolyStepFactor;
         public float noiseScale;
         public float noiseAmplitude;
+        public float isoLevel;
 
         private float FixedStepAmount => math.max(0.0005f, deltaTime * lowPolyStepFactor);
 
-        public void Execute(int index) {
+        public void Execute() {
             int pointsX = gridSize.x + 1;
             int pointsY = gridSize.y + 1;
             int planeSize = pointsX * pointsY;
 
-            int z = index / planeSize;
-            int rem = index - z * planeSize;
-            int y = rem / pointsX;
-            int x = rem - y * pointsX;
+            for (int index = 0; index < densities.Length; index++) {
+                int z = index / planeSize;
+                int rem = index - z * planeSize;
+                int y = rem / pointsX;
+                int x = rem - y * pointsX;
 
-            if (x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
+                if (x > gridSize.x || y > gridSize.y || z > gridSize.z) continue;
 
-            float3 voxelPos = new float3(x, y, z) * voxelSize;
+                float3 voxelPos = new float3(x, y, z) * voxelSize;
 
-            bool affects = false;
-            float shapeFactor = 1f;
+                bool affects = false;
+                float shapeFactor = 1f;
 
-            switch (brushShape) {
-                case BrushShape.Sphere:
-                    EvaluateSphere(voxelPos, ref affects, ref shapeFactor);
-                    break;
+                switch (brushShape) {
+                    case BrushShape.Sphere:
+                        EvaluateSphere(voxelPos, ref affects, ref shapeFactor);
+                        break;
 
-                case BrushShape.Box:
-                    EvaluateBox(voxelPos, ref affects, ref shapeFactor);
-                    break;
+                    case BrushShape.Box:
+                        EvaluateBox(voxelPos, ref affects, ref shapeFactor);
+                        break;
 
-                case BrushShape.VerticalPillar:
-                    EvaluateVerticalPillar(voxelPos, ref affects, ref shapeFactor);
-                    break;
+                    case BrushShape.VerticalPillar:
+                        EvaluateVerticalPillar(voxelPos, ref affects, ref shapeFactor);
+                        break;
 
-                case BrushShape.NoiseFeature:
-                    EvaluateNoiseFeature(voxelPos, ref affects, ref shapeFactor);
-                    break;
+                    case BrushShape.NoiseFeature:
+                        EvaluateNoiseFeature(voxelPos, ref affects, ref shapeFactor);
+                        break;
+                }
+
+                if (!affects) continue;
+
+                float oldDensity = sourceDensities[index];
+                float newDensity = ComputeQuantizedDensity(oldDensity, voxelPos, shapeFactor);
+                densities[index] = newDensity;
             }
-
-            if (!affects) return;
-
-            ApplyQuantizedDensity(index, voxelPos, shapeFactor);
         }
 
         // === EVALUACIÓN ESPACIAL ===
@@ -221,20 +232,17 @@ public static class TerrainSculptor {
         }
 
         // === APLICACIÓN LOW POLY CUANTIZADA ===
-        private void ApplyQuantizedDensity(int index, float3 voxelPos, float shapeFactor) {
+        private float ComputeQuantizedDensity(float current, float3 voxelPos, float shapeFactor) {
             float step = FixedStepAmount * math.max(0.01f, math.abs(strength)) * math.max(0.01f, shapeFactor);
-            float current = densities[index];
 
             switch (brushType) {
                 case BrushType.SphereAdd: {
                     float deltaDensity = -math.sign(strength == 0f ? 1f : strength) * step;
-                    densities[index] = current + deltaDensity;
-                    break;
+                    return current + deltaDensity;
                 }
                 case BrushType.SphereSubtract: {
                     float deltaDensity = math.sign(strength == 0f ? 1f : strength) * step;
-                    densities[index] = current + deltaDensity;
-                    break;
+                    return current + deltaDensity;
                 }
                 case BrushType.Flatten: {
                     float target = voxelPos.y - hitPoint.y;
@@ -245,10 +253,11 @@ public static class TerrainSculptor {
                     if ((dir > 0f && next > target) || (dir < 0f && next < target))
                         next = target;
 
-                    densities[index] = next;
-                    break;
+                    return next;
                 }
             }
+
+            return current;
         }
     }
 }

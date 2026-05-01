@@ -38,6 +38,7 @@ public class TerrainChunk : MonoBehaviour {
     [SerializeField] private int gridSizeZ = 16;
     [SerializeField] private float voxelSize = 1f;
     [SerializeField] private bool showDebugNodes = false;
+    [SerializeField] private byte baseMaterialID = 0;
 
     private MaterialPropertyBlock propBlock;
 
@@ -302,7 +303,7 @@ public class TerrainChunk : MonoBehaviour {
                 for (int x = 0; x <= gridSizeX; x++) {
                     int index = x + y * pointsX + z * pointsX * pointsY;
                     densities[index] = y * voxelSize - surfaceHeight;
-                    metadata[index] = 0;
+                    metadata[index] = densities[index] <= 0f ? baseMaterialID : (byte)0;
                 }
             }
         }
@@ -432,6 +433,18 @@ public class TerrainChunk : MonoBehaviour {
         public NativeArray<int> outCellTriangleCounts;
         public NativeArray<int> outCellVertexOffsets;
 
+        private void TryPickCornerMaterial(int cornerIndex, float cornerDensity, ref float bestSolidDensity, ref byte bestMatID) {
+            if (cornerDensity > 0f) return;
+
+            byte candidate = metadata[cornerIndex];
+            if (candidate == 0) return;
+
+            if (cornerDensity < bestSolidDensity) {
+                bestSolidDensity = cornerDensity;
+                bestMatID = candidate;
+            }
+        }
+
         private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
             float denom = d0 - d1;
             float t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
@@ -471,6 +484,21 @@ public class TerrainChunk : MonoBehaviour {
                 float d101 = densities[i101];
                 float d011 = densities[i011];
                 float d111 = densities[i111];
+
+                // === SELECCIÓN DE MATERIAL POR CELDA ===
+                float bestSolidDensity = float.MaxValue;
+                byte bestMatID = 0;
+
+                TryPickCornerMaterial(i000, d000, ref bestSolidDensity, ref bestMatID);
+                TryPickCornerMaterial(i100, d100, ref bestSolidDensity, ref bestMatID);
+                TryPickCornerMaterial(i010, d010, ref bestSolidDensity, ref bestMatID);
+                TryPickCornerMaterial(i110, d110, ref bestSolidDensity, ref bestMatID);
+                TryPickCornerMaterial(i001, d001, ref bestSolidDensity, ref bestMatID);
+                TryPickCornerMaterial(i101, d101, ref bestSolidDensity, ref bestMatID);
+                TryPickCornerMaterial(i011, d011, ref bestSolidDensity, ref bestMatID);
+                TryPickCornerMaterial(i111, d111, ref bestSolidDensity, ref bestMatID);
+
+                if (bestMatID != 0) matID = bestMatID;
 
                 int cubeIndex = 0;
                 if (d000 < 0f) cubeIndex |= 1;
@@ -810,6 +838,18 @@ public class TerrainChunk : MonoBehaviour {
             return math.any(!math.isfinite(normal)) ? math.up() : normal;
         }
 
+        private void TryPickCornerMaterial(int cornerIndex, float cornerDensity, ref float bestSolidDensity, ref byte bestMatID) {
+            if (cornerDensity > 0f) return;
+
+            byte candidate = metadata[cornerIndex];
+            if (candidate == 0) return;
+
+            if (cornerDensity < bestSolidDensity) {
+                bestSolidDensity = cornerDensity;
+                bestMatID = candidate;
+            }
+        }
+
         private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
             float denom = d0 - d1;
             float t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
@@ -860,6 +900,21 @@ public class TerrainChunk : MonoBehaviour {
                         float d101 = densities[i101];
                         float d011 = densities[i011];
                         float d111 = densities[i111];
+
+                        // === SELECCIÓN DE MATERIAL POR CELDA ===
+                        float bestSolidDensity = float.MaxValue;
+                        byte bestMatID = 0;
+
+                        TryPickCornerMaterial(i000, d000, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i100, d100, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i010, d010, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i110, d110, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i001, d001, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i101, d101, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i011, d011, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i111, d111, ref bestSolidDensity, ref bestMatID);
+
+                        if (bestMatID != 0) matID = bestMatID;
 
                         int cubeIndex = 0;
                         if (d000 < 0f) cubeIndex |= 1;
@@ -920,6 +975,18 @@ public class TerrainChunk : MonoBehaviour {
                     }
                 }
             }
+        }
+    }
+
+    private void TryPickCornerMaterial(int cornerIndex, float cornerDensity, ref float bestSolidDensity, ref byte bestMatID) {
+        if (cornerDensity > 0f) return;
+
+        byte candidate = metadata[cornerIndex];
+        if (candidate == 0) return;
+
+        if (cornerDensity < bestSolidDensity) {
+            bestSolidDensity = cornerDensity;
+            bestMatID = candidate;
         }
     }
 }

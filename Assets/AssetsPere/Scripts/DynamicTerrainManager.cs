@@ -1,3 +1,4 @@
+using Unity.Collections;
 using Unity.Mathematics;
 using UnityEngine;
 
@@ -174,6 +175,13 @@ public class DynamicTerrainManager : MonoBehaviour {
 
                     if (!inRange) continue;
 
+                    // === SNAPSHOT PRE-ESCULPIDO PARA EVITAR DELAYS/CONTAMINACIÓN ===
+                    float[] preDensities;
+                    byte[] preMetadata;
+                    CaptureChunkSnapshot(chunk, out preDensities, out preMetadata);
+
+                    byte impactMaterialID = SampleImpactMaterialFromSnapshot(localHit, preDensities, preMetadata);
+
                     if (mode == SculptMode.Smooth)
                         ApplySmoothToChunk(chunk, localHit);
                     else {
@@ -188,15 +196,209 @@ public class DynamicTerrainManager : MonoBehaviour {
                             BrushStrength,
                             CurrentBrushShape,
                             brushType,
-                            SelectedMaterialID,
+                            impactMaterialID,
                             IsVerticalBrush
                         );
                     }
 
+                    ReapplyMaterialsAfterSculpt(chunk, localHit, impactMaterialID, preDensities, preMetadata);
                     chunk.UpdateMesh();
                 }
             }
         }
+    }
+
+    private void CaptureChunkSnapshot(TerrainChunk chunk, out float[] preDensities, out byte[] preMetadata) {
+        var densities = chunk.Densities;
+        var metadata = chunk.Metadata;
+
+        preDensities = new float[densities.Length];
+        preMetadata = new byte[metadata.Length];
+
+        for (int i = 0; i < densities.Length; i++) {
+            preDensities[i] = densities[i];
+            preMetadata[i] = metadata[i];
+        }
+    }
+
+    private byte SampleImpactMaterialFromSnapshot(Vector3 localHit, float[] preDensities, byte[] preMetadata) {
+        int pointsX = chunkGridSize + 1;
+        int pointsY = chunkGridSize + 1;
+        int planeSize = pointsX * pointsY;
+
+        int hx = Mathf.Clamp(Mathf.RoundToInt(localHit.x / voxelSize), 0, chunkGridSize);
+        int hy = Mathf.Clamp(Mathf.RoundToInt(localHit.y / voxelSize), 0, chunkGridSize);
+        int hz = Mathf.Clamp(Mathf.RoundToInt(localHit.z / voxelSize), 0, chunkGridSize);
+
+        int index = hx + hy * pointsX + hz * planeSize;
+        if (preDensities[index] <= 0f && preMetadata[index] != 0) return preMetadata[index];
+
+        byte fallback = 0;
+        float bestSolid = float.MaxValue;
+
+        TryPickLocalMaterialFromSnapshot(hx + 1, hy, hz, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
+        TryPickLocalMaterialFromSnapshot(hx - 1, hy, hz, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
+        TryPickLocalMaterialFromSnapshot(hx, hy + 1, hz, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
+        TryPickLocalMaterialFromSnapshot(hx, hy - 1, hz, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
+        TryPickLocalMaterialFromSnapshot(hx, hy, hz + 1, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
+        TryPickLocalMaterialFromSnapshot(hx, hy, hz - 1, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
+
+        return fallback;
+    }
+
+    private void TryPickLocalMaterialFromSnapshot(
+        int x,
+        int y,
+        int z,
+        float[] preDensities,
+        byte[] preMetadata,
+        int pointsX,
+        int planeSize,
+        ref float bestSolid,
+        ref byte mat) {
+        if (x < 0 || y < 0 || z < 0 || x > chunkGridSize || y > chunkGridSize || z > chunkGridSize) return;
+
+        int i = x + y * pointsX + z * planeSize;
+        if (preDensities[i] > 0f) return;
+        if (preMetadata[i] == 0) return;
+
+        if (preDensities[i] < bestSolid) {
+            bestSolid = preDensities[i];
+            mat = preMetadata[i];
+        }
+    }
+
+    private void ReapplyMaterialsAfterSculpt(TerrainChunk chunk, Vector3 localHit, byte impactMaterialID, float[] preDensities, byte[] preMetadata) {
+        var densities = chunk.Densities;
+        var metadata = chunk.Metadata;
+
+        int pointsX = chunkGridSize + 1;
+        int pointsY = chunkGridSize + 1;
+        int planeSize = pointsX * pointsY;
+
+        float processRadius = BrushRadius + voxelSize * 1.5f;
+
+        // === PASO 1: CONSERVAR MATERIAL PREVIO Y ASIGNAR SOLO EN SÓLIDO NUEVO ===
+        for (int index = 0; index < densities.Length; index++) {
+            int z = index / planeSize;
+            int rem = index - z * planeSize;
+            int y = rem / pointsX;
+            int x = rem - y * pointsX;
+
+            float3 nodePos = new float3(x, y, z) * voxelSize;
+            float dist = math.distance(nodePos, (float3)localHit);
+            if (dist > processRadius) continue;
+
+            bool wasSolid = preDensities[index] <= 0f;
+            bool isSolidNow = densities[index] <= 0f;
+            if (!isSolidNow) continue;
+
+            byte preMat = preMetadata[index];
+            if (wasSolid) {
+                if (preMat != 0)
+                    metadata[index] = preMat;
+                continue;
+            }
+
+            byte nearestMat = ResolveNearestMaterialInNeighborhood(x, y, z, metadata, densities, pointsX, planeSize, 1);
+            if (nearestMat == 0)
+                nearestMat = ResolveNearestMaterialInNeighborhood(x, y, z, preMetadata, preDensities, pointsX, planeSize, 2);
+
+            if (nearestMat != 0)
+                metadata[index] = nearestMat;
+        }
+
+        // === PASO 2: RELLENO LOCAL DE HUECOS SOLO POR ADYACENCIA CERCANA ===
+        for (int index = 0; index < densities.Length; index++) {
+            if (densities[index] > 0f) continue;
+            if (metadata[index] != 0) continue;
+
+            int z = index / planeSize;
+            int rem = index - z * planeSize;
+            int y = rem / pointsX;
+            int x = rem - y * pointsX;
+
+            float3 nodePos = new float3(x, y, z) * voxelSize;
+            float dist = math.distance(nodePos, (float3)localHit);
+            if (dist > processRadius) continue;
+
+            byte nearestMat = ResolveNearestMaterialInNeighborhood(x, y, z, metadata, densities, pointsX, planeSize, 1);
+            if (nearestMat == 0)
+                nearestMat = ResolveNearestMaterialInNeighborhood(x, y, z, preMetadata, preDensities, pointsX, planeSize, 1);
+
+            if (nearestMat != 0)
+                metadata[index] = nearestMat;
+        }
+    }
+
+    private byte ResolveNearestMaterialInNeighborhood(int x, int y, int z, NativeArray<byte> metadata, NativeArray<float> densities, int pointsX, int planeSize, int cellRadius) {
+        byte best = 0;
+        float bestDistance = float.MaxValue;
+        float bestSolid = float.MaxValue;
+
+        for (int dz = -cellRadius; dz <= cellRadius; dz++) {
+            for (int dy = -cellRadius; dy <= cellRadius; dy++) {
+                for (int dx = -cellRadius; dx <= cellRadius; dx++) {
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    int nz = z + dz;
+
+                    if (nx < 0 || ny < 0 || nz < 0 || nx > chunkGridSize || ny > chunkGridSize || nz > chunkGridSize) continue;
+
+                    int ni = nx + ny * pointsX + nz * planeSize;
+                    if (densities[ni] > 0f) continue;
+
+                    byte m = metadata[ni];
+                    if (m == 0) continue;
+
+                    float d = dx * dx + dy * dy + dz * dz;
+                    float solid = densities[ni];
+
+                    if (d < bestDistance || (math.abs(d - bestDistance) < 0.001f && solid < bestSolid)) {
+                        bestDistance = d;
+                        bestSolid = solid;
+                        best = m;
+                    }
+                }
+            }
+        }
+
+        return best;
+    }
+
+    private byte ResolveNearestMaterialInNeighborhood(int x, int y, int z, byte[] metadata, float[] densities, int pointsX, int planeSize, int cellRadius) {
+        byte best = 0;
+        float bestDistance = float.MaxValue;
+        float bestSolid = float.MaxValue;
+
+        for (int dz = -cellRadius; dz <= cellRadius; dz++) {
+            for (int dy = -cellRadius; dy <= cellRadius; dy++) {
+                for (int dx = -cellRadius; dx <= cellRadius; dx++) {
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    int nz = z + dz;
+
+                    if (nx < 0 || ny < 0 || nz < 0 || nx > chunkGridSize || ny > chunkGridSize || nz > chunkGridSize) continue;
+
+                    int ni = nx + ny * pointsX + nz * planeSize;
+                    if (densities[ni] > 0f) continue;
+
+                    byte m = metadata[ni];
+                    if (m == 0) continue;
+
+                    float d = dx * dx + dy * dy + dz * dz;
+                    float solid = densities[ni];
+
+                    if (d < bestDistance || (math.abs(d - bestDistance) < 0.001f && solid < bestSolid)) {
+                        bestDistance = d;
+                        bestSolid = solid;
+                        best = m;
+                    }
+                }
+            }
+        }
+
+        return best;
     }
 
     // === PINTURA ===
