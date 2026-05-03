@@ -180,7 +180,7 @@ public class DynamicTerrainManager : MonoBehaviour {
                     byte[] preMetadata;
                     CaptureChunkSnapshot(chunk, out preDensities, out preMetadata);
 
-                    byte impactMaterialID = SampleImpactMaterialFromSnapshot(localHit, preDensities, preMetadata);
+                    byte impactMaterialID = PickImpactMat(localHit, preDensities, preMetadata);
 
                     if (mode == SculptMode.Smooth)
                         ApplySmoothToChunk(chunk, localHit);
@@ -201,7 +201,7 @@ public class DynamicTerrainManager : MonoBehaviour {
                         );
                     }
 
-                    ReapplyMaterialsAfterSculpt(chunk, localHit, impactMaterialID, preDensities, preMetadata);
+                    ReapplyMaterialsAfterSculpt(chunk, localHit, impactMaterialID, mode, preDensities, preMetadata);
                     chunk.UpdateMesh();
                 }
             }
@@ -221,7 +221,7 @@ public class DynamicTerrainManager : MonoBehaviour {
         }
     }
 
-    private byte SampleImpactMaterialFromSnapshot(Vector3 localHit, float[] preDensities, byte[] preMetadata) {
+    private byte PickImpactMat(Vector3 localHit, float[] preDensities, byte[] preMetadata) {
         int pointsX = chunkGridSize + 1;
         int pointsY = chunkGridSize + 1;
         int planeSize = pointsX * pointsY;
@@ -236,17 +236,17 @@ public class DynamicTerrainManager : MonoBehaviour {
         byte fallback = 0;
         float bestSolid = float.MaxValue;
 
-        TryPickLocalMaterialFromSnapshot(hx + 1, hy, hz, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
-        TryPickLocalMaterialFromSnapshot(hx - 1, hy, hz, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
-        TryPickLocalMaterialFromSnapshot(hx, hy + 1, hz, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
-        TryPickLocalMaterialFromSnapshot(hx, hy - 1, hz, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
-        TryPickLocalMaterialFromSnapshot(hx, hy, hz + 1, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
-        TryPickLocalMaterialFromSnapshot(hx, hy, hz - 1, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
+        TryPickLocalMat(hx + 1, hy, hz, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
+        TryPickLocalMat(hx - 1, hy, hz, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
+        TryPickLocalMat(hx, hy + 1, hz, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
+        TryPickLocalMat(hx, hy - 1, hz, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
+        TryPickLocalMat(hx, hy, hz + 1, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
+        TryPickLocalMat(hx, hy, hz - 1, preDensities, preMetadata, pointsX, planeSize, ref bestSolid, ref fallback);
 
         return fallback;
     }
 
-    private void TryPickLocalMaterialFromSnapshot(
+    private void TryPickLocalMat(
         int x,
         int y,
         int z,
@@ -268,7 +268,7 @@ public class DynamicTerrainManager : MonoBehaviour {
         }
     }
 
-    private void ReapplyMaterialsAfterSculpt(TerrainChunk chunk, Vector3 localHit, byte impactMaterialID, float[] preDensities, byte[] preMetadata) {
+    private void ReapplyMaterialsAfterSculpt(TerrainChunk chunk, Vector3 localHit, byte impactMaterialID, SculptMode mode, float[] preDensities, byte[] preMetadata) {
         var densities = chunk.Densities;
         var metadata = chunk.Metadata;
 
@@ -277,6 +277,7 @@ public class DynamicTerrainManager : MonoBehaviour {
         int planeSize = pointsX * pointsY;
 
         float processRadius = BrushRadius + voxelSize * 1.5f;
+        float impactFallbackRadius = math.max(voxelSize, BrushRadius * 0.6f);
 
         // === PASO 1: CONSERVAR MATERIAL PREVIO Y ASIGNAR SOLO EN SÓLIDO NUEVO ===
         for (int index = 0; index < densities.Length; index++) {
@@ -300,38 +301,51 @@ public class DynamicTerrainManager : MonoBehaviour {
                 continue;
             }
 
-            byte nearestMat = ResolveNearestMaterialInNeighborhood(x, y, z, metadata, densities, pointsX, planeSize, 1);
+            byte nearestMat = ResolveNearestMat(x, y, z, metadata, densities, pointsX, planeSize, 1);
             if (nearestMat == 0)
-                nearestMat = ResolveNearestMaterialInNeighborhood(x, y, z, preMetadata, preDensities, pointsX, planeSize, 2);
+                nearestMat = ResolveNearestMat(x, y, z, preMetadata, preDensities, pointsX, planeSize, 2);
+            if (nearestMat == 0 && mode == SculptMode.Add && impactMaterialID != 0 && dist <= impactFallbackRadius)
+                nearestMat = impactMaterialID;
 
             if (nearestMat != 0)
                 metadata[index] = nearestMat;
         }
 
-        // === PASO 2: RELLENO LOCAL DE HUECOS SOLO POR ADYACENCIA CERCANA ===
-        for (int index = 0; index < densities.Length; index++) {
-            if (densities[index] > 0f) continue;
-            if (metadata[index] != 0) continue;
+        // === PASO 2: RELLENO LOCAL EN PASADAS PARA PROPAGACIÓN GRADUAL ===
+        int fillPasses = mode == SculptMode.Add ? 4 : 1;
+        for (int pass = 0; pass < fillPasses; pass++) {
+            bool changed = false;
 
-            int z = index / planeSize;
-            int rem = index - z * planeSize;
-            int y = rem / pointsX;
-            int x = rem - y * pointsX;
+            for (int index = 0; index < densities.Length; index++) {
+                if (densities[index] > 0f) continue;
+                if (metadata[index] != 0) continue;
 
-            float3 nodePos = new float3(x, y, z) * voxelSize;
-            float dist = math.distance(nodePos, (float3)localHit);
-            if (dist > processRadius) continue;
+                int z = index / planeSize;
+                int rem = index - z * planeSize;
+                int y = rem / pointsX;
+                int x = rem - y * pointsX;
 
-            byte nearestMat = ResolveNearestMaterialInNeighborhood(x, y, z, metadata, densities, pointsX, planeSize, 1);
-            if (nearestMat == 0)
-                nearestMat = ResolveNearestMaterialInNeighborhood(x, y, z, preMetadata, preDensities, pointsX, planeSize, 1);
+                float3 nodePos = new float3(x, y, z) * voxelSize;
+                float dist = math.distance(nodePos, (float3)localHit);
+                if (dist > processRadius) continue;
 
-            if (nearestMat != 0)
+                byte nearestMat = ResolveNearestMat(x, y, z, metadata, densities, pointsX, planeSize, 1);
+                if (nearestMat == 0)
+                    nearestMat = ResolveNearestMat(x, y, z, preMetadata, preDensities, pointsX, planeSize, 1);
+                if (nearestMat == 0 && mode == SculptMode.Add && impactMaterialID != 0 && dist <= impactFallbackRadius)
+                    nearestMat = impactMaterialID;
+
+                if (nearestMat == 0) continue;
+
                 metadata[index] = nearestMat;
+                changed = true;
+            }
+
+            if (!changed) break;
         }
     }
 
-    private byte ResolveNearestMaterialInNeighborhood(int x, int y, int z, NativeArray<byte> metadata, NativeArray<float> densities, int pointsX, int planeSize, int cellRadius) {
+    private byte ResolveNearestMat(int x, int y, int z, NativeArray<byte> metadata, NativeArray<float> densities, int pointsX, int planeSize, int cellRadius) {
         byte best = 0;
         float bestDistance = float.MaxValue;
         float bestSolid = float.MaxValue;
@@ -366,7 +380,7 @@ public class DynamicTerrainManager : MonoBehaviour {
         return best;
     }
 
-    private byte ResolveNearestMaterialInNeighborhood(int x, int y, int z, byte[] metadata, float[] densities, int pointsX, int planeSize, int cellRadius) {
+    private byte ResolveNearestMat(int x, int y, int z, byte[] metadata, float[] densities, int pointsX, int planeSize, int cellRadius) {
         byte best = 0;
         float bestDistance = float.MaxValue;
         float bestSolid = float.MaxValue;
