@@ -31,8 +31,46 @@ public static class TerrainSculptor {
 
         if (!densities.IsCreated || !metadata.IsCreated || radius <= 0f || voxelSize <= 0f) return;
 
+        NativeArray<float> sourceDensities;
+        JobHandle handle = ScheduleSculptJob(
+            densities,
+            metadata,
+            gridSize,
+            voxelSize,
+            localHitPoint,
+            radius,
+            strength,
+            shape,
+            type,
+            hitMaterial,
+            isVertical,
+            out sourceDensities
+        );
+
+        handle.Complete();
+        if (sourceDensities.IsCreated) sourceDensities.Dispose();
+    }
+
+    public static JobHandle ScheduleSculptJob(
+        NativeArray<float> densities,
+        NativeArray<byte> metadata,
+        int3 gridSize,
+        float voxelSize,
+        Vector3 localHitPoint,
+        float radius,
+        float strength,
+        BrushShape shape,
+        BrushType type,
+        byte hitMaterial,
+        bool isVertical,
+        out NativeArray<float> sourceDensities,
+        JobHandle dependsOn = default) {
+
+        sourceDensities = default;
+        if (!densities.IsCreated || !metadata.IsCreated || radius <= 0f || voxelSize <= 0f) return dependsOn;
+
         float dt = Time.deltaTime > 0f ? Time.deltaTime : (1f / 60f);
-        NativeArray<float> sourceDensities = new NativeArray<float>(densities, Allocator.TempJob);
+        sourceDensities = new NativeArray<float>(densities, Allocator.TempJob);
 
         TerrainSculptorJob job = new TerrainSculptorJob {
             Densities = densities,
@@ -54,13 +92,13 @@ public static class TerrainSculptor {
             hitMaterial = hitMaterial
         };
 
-        job.Schedule().Complete();
-        sourceDensities.Dispose();
+        return job.Schedule(dependsOn);
     }
 
     // === PINTURA DE MATERIALES ===
     public static JobHandle SchedulePaintJob(
         NativeArray<byte> metadata,
+        NativeArray<float> densities,
         int3 gridSize,
         float voxelSize,
         Vector3 localHitPoint,
@@ -68,10 +106,11 @@ public static class TerrainSculptor {
         byte targetMaterialID,
         JobHandle dependsOn = default) {
 
-        if (!metadata.IsCreated || radius <= 0f || voxelSize <= 0f) return dependsOn;
+        if (!metadata.IsCreated || !densities.IsCreated || radius <= 0f || voxelSize <= 0f) return dependsOn;
 
         PaintTerrainJob job = new PaintTerrainJob {
             Metadata = metadata,
+            Densities = densities,
             gridSize = gridSize,
             voxelSize = voxelSize,
             localHitPoint = localHitPoint,
@@ -85,6 +124,7 @@ public static class TerrainSculptor {
     [BurstCompile]
     public struct PaintTerrainJob : IJobParallelFor {
         public NativeArray<byte> Metadata;
+        [ReadOnly] public NativeArray<float> Densities;
         public int3 gridSize;
         public float voxelSize;
         public Vector3 localHitPoint;
@@ -105,6 +145,7 @@ public static class TerrainSculptor {
 
             Vector3 voxelPos = new Vector3(x, y, z) * voxelSize;
             if (Vector3.Distance(voxelPos, localHitPoint) >= radius) return;
+            if (Densities[index] >= 0f) return;
 
             Metadata[index] = targetMaterialID;
         }
