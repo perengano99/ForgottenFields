@@ -5,7 +5,6 @@ using UnityEngine;
 public enum EditMode { Sculpt, Paint }
 public enum SculptMode { Add, Subtract, Flatten, Smooth }
 
-// -[] El modo sculpt no debe asignar material, pero el paint sí. Separar lógica de ambos modos en métodos distintos para evitar confusiones y errores futuros.
 // -[] El sistema vertical no funciona como se espera. El objetivo es que esculpa de manera vertical, sin importar la orentacion de la vista o el punto de impacto. Tampoco debe funcionar en un radio de esfera, sino como un plano desde el punto vertical.
 // -[] El esculpido en general sigue siendo muy suave y no genera terreno estilo low poly.
 
@@ -92,7 +91,7 @@ public class DynamicTerrainManager : MonoBehaviour {
         if (Camera.main == null) return;
 
         Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
-        if (!RaycastVoxel(ray, out Vector3 hitPoint, out _)) return;
+        if (!RaycastVoxel(ray, out Vector3 hitPoint, out TerrainChunk hitChunk)) return;
 
         if (currentEditMode == EditMode.Paint) {
             ApplyPaintBrush(hitPoint);
@@ -105,7 +104,26 @@ public class DynamicTerrainManager : MonoBehaviour {
         else if (Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt)) mode = SculptMode.Subtract;
         else mode = SculptMode.Add;
 
-        ApplySculptBrush(hitPoint, mode);
+        byte hitMaterial = PickRayHitMat(hitChunk, hitPoint);
+        ApplySculptBrush(hitPoint, mode, hitMaterial);
+    }
+
+    private byte PickRayHitMat(TerrainChunk chunk, Vector3 hitPoint) {
+        if (chunk == null || !chunk.Metadata.IsCreated) return 0;
+
+        Vector3 localHit = hitPoint - chunk.transform.position;
+        int3 gridSize = new int3(chunkGridSize + 1, chunkGridSize + 1, chunkGridSize + 1);
+
+        int x = Mathf.RoundToInt(localHit.x / voxelSize);
+        int y = Mathf.RoundToInt(localHit.y / voxelSize);
+        int z = Mathf.RoundToInt(localHit.z / voxelSize);
+
+        if (x < 0 || y < 0 || z < 0 || x >= gridSize.x || y >= gridSize.y || z >= gridSize.z) return 0;
+
+        int hitIndex = x + (y * gridSize.x) + (z * gridSize.x * gridSize.y);
+        if (hitIndex < 0 || hitIndex >= chunk.Metadata.Length) return 0;
+
+        return chunk.Metadata[hitIndex];
     }
 
     // === CONSTRUCCIÓN DE CHUNKS ===
@@ -155,7 +173,7 @@ public class DynamicTerrainManager : MonoBehaviour {
     }
 
     // === ESCULPIDO ===
-    public void ApplySculptBrush(Vector3 worldHitPoint, SculptMode mode) {
+    public void ApplySculptBrush(Vector3 worldHitPoint, SculptMode mode, byte hitMaterial = 0) {
         if (!isEditing || chunks == null) return;
 
         for (int x = 0; x < chunks.GetLength(0); x++) {
@@ -180,7 +198,7 @@ public class DynamicTerrainManager : MonoBehaviour {
                     byte[] preMetadata;
                     CaptureChunkSnapshot(chunk, out preDensities, out preMetadata);
 
-                    byte impactMaterialID = PickImpactMat(localHit, preDensities, preMetadata);
+                    byte impactMaterialID = hitMaterial != 0 ? hitMaterial : PickImpactMat(localHit, preDensities, preMetadata);
 
                     if (mode == SculptMode.Smooth)
                         ApplySmoothToChunk(chunk, localHit);

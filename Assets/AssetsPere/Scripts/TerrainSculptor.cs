@@ -26,16 +26,17 @@ public static class TerrainSculptor {
         float strength,
         BrushShape shape,
         BrushType type,
-        byte materialID,
+        byte hitMaterial,
         bool isVertical = false) {
 
-        if (!densities.IsCreated || radius <= 0f || voxelSize <= 0f) return;
+        if (!densities.IsCreated || !metadata.IsCreated || radius <= 0f || voxelSize <= 0f) return;
 
         float dt = Time.deltaTime > 0f ? Time.deltaTime : (1f / 60f);
         NativeArray<float> sourceDensities = new NativeArray<float>(densities, Allocator.TempJob);
 
-        SculptJob job = new SculptJob {
-            densities = densities,
+        TerrainSculptorJob job = new TerrainSculptorJob {
+            Densities = densities,
+            Metadata = metadata,
             sourceDensities = sourceDensities,
             gridSize = gridSize,
             voxelSize = voxelSize,
@@ -49,7 +50,8 @@ public static class TerrainSculptor {
             lowPolyStepFactor = 3.5f,
             noiseScale = 0.18f,
             noiseAmplitude = 1.0f,
-            isoLevel = 0f
+            isoLevel = 0f,
+            hitMaterial = hitMaterial
         };
 
         job.Schedule().Complete();
@@ -109,8 +111,9 @@ public static class TerrainSculptor {
     }
 
     [BurstCompile]
-    private struct SculptJob : IJob {
-        public NativeArray<float> densities;
+    private struct TerrainSculptorJob : IJob {
+        public NativeArray<float> Densities;
+        public NativeArray<byte> Metadata;
 
         [ReadOnly] public NativeArray<float> sourceDensities;
 
@@ -130,6 +133,7 @@ public static class TerrainSculptor {
         public float noiseScale;
         public float noiseAmplitude;
         public float isoLevel;
+        public byte hitMaterial;
 
         private float FixedStepAmount => math.max(0.0005f, deltaTime * lowPolyStepFactor);
 
@@ -138,7 +142,10 @@ public static class TerrainSculptor {
             int pointsY = gridSize.y + 1;
             int planeSize = pointsX * pointsY;
 
-            for (int index = 0; index < densities.Length; index++) {
+            float injectRadius = radius * 0.9f;
+            float coreRadius = math.max(voxelSize * 1.25f, radius * 0.22f);
+
+            for (int index = 0; index < Densities.Length; index++) {
                 int z = index / planeSize;
                 int rem = index - z * planeSize;
                 int y = rem / pointsX;
@@ -172,9 +179,83 @@ public static class TerrainSculptor {
                 if (!affects) continue;
 
                 float oldDensity = sourceDensities[index];
+                bool wasAir = oldDensity > isoLevel;
+
                 float newDensity = ComputeQuantizedDensity(oldDensity, voxelPos, shapeFactor);
-                densities[index] = newDensity;
+                Densities[index] = newDensity;
+
+                bool isNowSolid = newDensity <= isoLevel;
+                if (brushType != BrushType.SphereAdd) continue;
+                if (!wasAir || !isNowSolid) continue;
+                if (hitMaterial == 0) continue;
+
+                float radialDist = math.distance(voxelPos, hitPoint);
+                if (radialDist <= coreRadius)
+                    Metadata[index] = hitMaterial;
             }
+
+            if (brushType != BrushType.SphereAdd || hitMaterial == 0) return;
+
+            for (int pass = 0; pass < 3; pass++) {
+                bool changed = false;
+
+                for (int index = 0; index < Densities.Length; index++) {
+                    int z = index / planeSize;
+                    int rem = index - z * planeSize;
+                    int y = rem / pointsX;
+                    int x = rem - y * pointsX;
+
+                    if (x > gridSize.x || y > gridSize.y || z > gridSize.z) continue;
+
+                    float3 voxelPos = new float3(x, y, z) * voxelSize;
+                    float radialDist = math.distance(voxelPos, hitPoint);
+                    if (radialDist > injectRadius) continue;
+
+                    float oldDensity = sourceDensities[index];
+                    bool wasAir = oldDensity > isoLevel;
+                    if (!wasAir) continue;
+                    if (Densities[index] > isoLevel) continue;
+                    if (Metadata[index] == hitMaterial) continue;
+
+                    if (!HasNeighborHitMat(x, y, z, pointsX, planeSize)) continue;
+
+                    Metadata[index] = hitMaterial;
+                    changed = true;
+                }
+
+                if (!changed) break;
+            }
+        }
+
+        private bool HasNeighborHitMat(int x, int y, int z, int pointsX, int planeSize) {
+            int3 p = new int3(x, y, z);
+
+            int3 n0 = p + new int3(1, 0, 0);
+            if (IsHitMatSolid(n0, pointsX, planeSize)) return true;
+
+            int3 n1 = p + new int3(-1, 0, 0);
+            if (IsHitMatSolid(n1, pointsX, planeSize)) return true;
+
+            int3 n2 = p + new int3(0, 1, 0);
+            if (IsHitMatSolid(n2, pointsX, planeSize)) return true;
+
+            int3 n3 = p + new int3(0, -1, 0);
+            if (IsHitMatSolid(n3, pointsX, planeSize)) return true;
+
+            int3 n4 = p + new int3(0, 0, 1);
+            if (IsHitMatSolid(n4, pointsX, planeSize)) return true;
+
+            int3 n5 = p + new int3(0, 0, -1);
+            return IsHitMatSolid(n5, pointsX, planeSize);
+        }
+
+        private bool IsHitMatSolid(int3 p, int pointsX, int planeSize) {
+            if (p.x < 0 || p.y < 0 || p.z < 0 || p.x > gridSize.x || p.y > gridSize.y || p.z > gridSize.z) return false;
+
+            int i = p.x + p.y * pointsX + p.z * planeSize;
+            if (i < 0 || i >= Densities.Length) return false;
+            if (Densities[i] > isoLevel) return false;
+            return Metadata[i] == hitMaterial;
         }
 
         // === EVALUACIÓN ESPACIAL ===
