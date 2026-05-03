@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
@@ -200,16 +201,19 @@ public class DynamicTerrainManagerEditor : Editor {
 
         // === PINTAR / ESCULPIR ===
         if ((e.type == EventType.MouseDown || e.type == EventType.MouseDrag) && e.button == 0 && hasHit) {
-            if (mgr.currentEditMode == EditMode.Paint)
-                mgr.ApplyPaintBrush(hit.point);
-            else {
-                SculptMode mode;
-                if ((modifiers & EventModifiers.Control) != 0) mode = SculptMode.Smooth;
-                else if ((modifiers & EventModifiers.Shift) != 0) mode = SculptMode.Flatten;
-                else if ((modifiers & EventModifiers.Alt) != 0) mode = SculptMode.Subtract;
-                else mode = SculptMode.Add;
+            List<TerrainChunk> affectedChunks = CollectAffectedChunks(mgr, hit.point);
+            if (affectedChunks.Count > 0) {
+                if (mgr.currentEditMode == EditMode.Paint)
+                    mgr.ApplyPaintBrush(hit.point, affectedChunks);
+                else {
+                    SculptMode mode;
+                    if ((modifiers & EventModifiers.Control) != 0) mode = SculptMode.Smooth;
+                    else if ((modifiers & EventModifiers.Shift) != 0) mode = SculptMode.Flatten;
+                    else if ((modifiers & EventModifiers.Alt) != 0) mode = SculptMode.Subtract;
+                    else mode = SculptMode.Add;
 
-                mgr.ApplySculptBrush(hit.point, mode);
+                    mgr.ApplySculptBrush(hit.point, mode, 0, affectedChunks);
+                }
             }
 
             if (e.type == EventType.MouseDrag)
@@ -221,5 +225,30 @@ public class DynamicTerrainManagerEditor : Editor {
 
         if (e.type == EventType.MouseMove || e.type == EventType.MouseDrag)
             SceneView.RepaintAll();
+    }
+
+    private static List<TerrainChunk> CollectAffectedChunks(DynamicTerrainManager mgr, Vector3 hitPoint) {
+        List<TerrainChunk> affectedChunks = new List<TerrainChunk>();
+        TerrainChunk[,,] chunks = mgr.Chunks;
+        if (chunks == null) return affectedChunks;
+
+        Bounds brushBounds = new Bounds(hitPoint, Vector3.one * (mgr.BrushRadius * 2f));
+
+        for (int x = 0; x < chunks.GetLength(0); x++) {
+            for (int y = 0; y < chunks.GetLength(1); y++) {
+                for (int z = 0; z < chunks.GetLength(2); z++) {
+                    TerrainChunk chunk = chunks[x, y, z];
+                    if (chunk == null) continue;
+
+                    Collider col = chunk.GetComponent<Collider>();
+                    Bounds chunkBounds = col != null ? col.bounds : new Bounds(chunk.transform.position, Vector3.zero);
+                    if (!chunkBounds.Intersects(brushBounds)) continue;
+
+                    affectedChunks.Add(chunk);
+                }
+            }
+        }
+
+        return affectedChunks;
     }
 }

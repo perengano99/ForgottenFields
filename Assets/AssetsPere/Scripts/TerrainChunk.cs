@@ -51,6 +51,110 @@ public class TerrainChunk : MonoBehaviour {
     public NativeArray<float> Densities => densities;
     public NativeArray<byte> Metadata => metadata;
 
+    public void SyncBordersWith(TerrainChunk neighbor, Vector3Int direction) {
+        if (neighbor == null) return;
+        if (!densities.IsCreated || !metadata.IsCreated) return;
+        if (!neighbor.Densities.IsCreated || !neighbor.Metadata.IsCreated) return;
+
+        if (gridSizeX != neighbor.gridSizeX || gridSizeY != neighbor.gridSizeY || gridSizeZ != neighbor.gridSizeZ) return;
+
+        int pointsX = gridSizeX + 1;
+        int pointsY = gridSizeY + 1;
+        int pointsZ = gridSizeZ + 1;
+        int planeSize = pointsX * pointsY;
+
+        NativeArray<float> nDensities = neighbor.Densities;
+        NativeArray<byte> nMetadata = neighbor.Metadata;
+
+        if (direction == Vector3Int.right) {
+            int dstX = gridSizeX;
+            int srcX = 0;
+
+            for (int z = 0; z < pointsZ; z++)
+                for (int y = 0; y < pointsY; y++) {
+                    int dst = dstX + y * pointsX + z * planeSize;
+                    int src = srcX + y * pointsX + z * planeSize;
+                    densities[dst] = nDensities[src];
+                    metadata[dst] = nMetadata[src];
+                }
+
+            return;
+        }
+
+        if (direction == Vector3Int.left) {
+            int dstX = 0;
+            int srcX = gridSizeX;
+
+            for (int z = 0; z < pointsZ; z++)
+                for (int y = 0; y < pointsY; y++) {
+                    int dst = dstX + y * pointsX + z * planeSize;
+                    int src = srcX + y * pointsX + z * planeSize;
+                    densities[dst] = nDensities[src];
+                    metadata[dst] = nMetadata[src];
+                }
+
+            return;
+        }
+
+        if (direction == Vector3Int.up) {
+            int dstY = gridSizeY;
+            int srcY = 0;
+
+            for (int z = 0; z < pointsZ; z++)
+                for (int x = 0; x < pointsX; x++) {
+                    int dst = x + dstY * pointsX + z * planeSize;
+                    int src = x + srcY * pointsX + z * planeSize;
+                    densities[dst] = nDensities[src];
+                    metadata[dst] = nMetadata[src];
+                }
+
+            return;
+        }
+
+        if (direction == Vector3Int.down) {
+            int dstY = 0;
+            int srcY = gridSizeY;
+
+            for (int z = 0; z < pointsZ; z++)
+                for (int x = 0; x < pointsX; x++) {
+                    int dst = x + dstY * pointsX + z * planeSize;
+                    int src = x + srcY * pointsX + z * planeSize;
+                    densities[dst] = nDensities[src];
+                    metadata[dst] = nMetadata[src];
+                }
+
+            return;
+        }
+
+        if (direction == Vector3Int.forward) {
+            int dstZ = gridSizeZ;
+            int srcZ = 0;
+
+            for (int y = 0; y < pointsY; y++)
+                for (int x = 0; x < pointsX; x++) {
+                    int dst = x + y * pointsX + dstZ * planeSize;
+                    int src = x + y * pointsX + srcZ * planeSize;
+                    densities[dst] = nDensities[src];
+                    metadata[dst] = nMetadata[src];
+                }
+
+            return;
+        }
+
+        if (direction == Vector3Int.back) {
+            int dstZ = 0;
+            int srcZ = gridSizeZ;
+
+            for (int y = 0; y < pointsY; y++)
+                for (int x = 0; x < pointsX; x++) {
+                    int dst = x + y * pointsX + dstZ * planeSize;
+                    int src = x + y * pointsX + srcZ * planeSize;
+                    densities[dst] = nDensities[src];
+                    metadata[dst] = nMetadata[src];
+                }
+        }
+    }
+
     public bool TryExportTerrainData(out float[] outDensities, out byte[] outMetadata) {
         outDensities = null;
         outMetadata = null;
@@ -130,15 +234,7 @@ public class TerrainChunk : MonoBehaviour {
         return MaterialRegistry.Instance.RegistryData.IsCreated;
     }
 
-    private void OnEnable() {
-        if (!EnsureRegistryIsReady()) return;
-
-        if (chunkMesh == null) {
-            chunkMesh = new Mesh { name = "VoxelChunk" };
-            chunkMesh.hideFlags = HideFlags.DontSave;
-            GetComponent<MeshFilter>().sharedMesh = chunkMesh;
-        }
-
+    private void InitializeData() {
         int pointCount = (gridSizeX + 1) * (gridSizeY + 1) * (gridSizeZ + 1);
         int cellCount = gridSizeX * gridSizeY * gridSizeZ;
 
@@ -169,6 +265,18 @@ public class TerrainChunk : MonoBehaviour {
         for (int row = 0; row < 256; row++)
             for (int col = 0; col < 16; col++)
                 nativeTriTable[row * 16 + col] = MarchingCubesTables.TriTable[row, col];
+    }
+
+    private void OnEnable() {
+        if (!EnsureRegistryIsReady()) return;
+
+        if (chunkMesh == null) {
+            chunkMesh = new Mesh { name = "VoxelChunk" };
+            chunkMesh.hideFlags = HideFlags.DontSave;
+            GetComponent<MeshFilter>().sharedMesh = chunkMesh;
+        }
+
+        InitializeData();
 
         validatedGridSizeX = gridSizeX;
         validatedGridSizeY = gridSizeY;
@@ -296,12 +404,14 @@ public class TerrainChunk : MonoBehaviour {
 
         int pointsX = gridSizeX + 1;
         int pointsY = gridSizeY + 1;
+        int pointsZ = gridSizeZ + 1;
+        int planeSize = pointsX * pointsY;
         float surfaceHeight = (gridSizeY / 2f) * voxelSize;
 
-        for (int z = 0; z <= gridSizeZ; z++) {
-            for (int y = 0; y <= gridSizeY; y++) {
-                for (int x = 0; x <= gridSizeX; x++) {
-                    int index = x + y * pointsX + z * pointsX * pointsY;
+        for (int z = 0; z < pointsZ; z++) {
+            for (int y = 0; y < pointsY; y++) {
+                for (int x = 0; x < pointsX; x++) {
+                    int index = x + y * pointsX + z * planeSize;
                     densities[index] = y * voxelSize - surfaceHeight;
                     metadata[index] = densities[index] <= 0f ? baseMaterialID : (byte)0;
                 }
@@ -322,6 +432,8 @@ public class TerrainChunk : MonoBehaviour {
 
         int3 gridSize = new int3(gridSizeX, gridSizeY, gridSizeZ);
         int cellCount = gridSizeX * gridSizeY * gridSizeZ;
+        int expectedPointCount = (gridSize.x + 1) * (gridSize.y + 1) * (gridSize.z + 1);
+        if (densities.Length != expectedPointCount || metadata.Length != expectedPointCount) return;
 
         CountTrianglesJob countJob = new CountTrianglesJob {
             densities = densities,
@@ -402,11 +514,13 @@ public class TerrainChunk : MonoBehaviour {
 
         int pointsX = gridSizeX + 1;
         int pointsY = gridSizeY + 1;
+        int pointsZ = gridSizeZ + 1;
+        int planeSize = pointsX * pointsY;
 
-        for (int z = 0; z <= gridSizeZ; z++) {
-            for (int y = 0; y <= gridSizeY; y++) {
-                for (int x = 0; x <= gridSizeX; x++) {
-                    int index = x + y * pointsX + z * pointsX * pointsY;
+        for (int z = 0; z < pointsZ; z++) {
+            for (int y = 0; y < pointsY; y++) {
+                for (int x = 0; x < pointsX; x++) {
+                    int index = x + y * pointsX + z * planeSize;
                     float density = densities[index];
                     if (density >= 0f) continue;
 
@@ -457,95 +571,92 @@ public class TerrainChunk : MonoBehaviour {
             int pointsY = gridSize.y + 1;
             int planeSize = pointsX * pointsY;
 
-            for (int index = 0; index < densities.Length; index++) {
-                int z = index / planeSize;
-                int rem = index - z * planeSize;
-                int y = rem / pointsX;
-                int x = rem - y * pointsX;
+            for (int z = 0; z < gridSize.z; z++) {
+                for (int y = 0; y < gridSize.y; y++) {
+                    for (int x = 0; x < gridSize.x; x++) {
+                        int i000 = x + y * pointsX + z * planeSize;
+                        int i100 = i000 + 1;
+                        int i010 = i000 + pointsX;
+                        int i110 = i010 + 1;
+                        int i001 = i000 + planeSize;
+                        int i101 = i001 + 1;
+                        int i011 = i001 + pointsX;
+                        int i111 = i011 + 1;
 
-                if (x >= gridSize.x || y >= gridSize.y || z >= gridSize.z) continue;
+                        byte matID = metadata[i000];
 
-                int i000 = x + y * pointsX + z * planeSize;
-                int i100 = i000 + 1;
-                int i010 = i000 + pointsX;
-                int i110 = i010 + 1;
-                int i001 = i000 + planeSize;
-                int i101 = i001 + 1;
-                int i011 = i001 + pointsX;
-                int i111 = i011 + 1;
+                        float d000 = densities[i000];
+                        float d100 = densities[i100];
+                        float d010 = densities[i010];
+                        float d110 = densities[i110];
+                        float d001 = densities[i001];
+                        float d101 = densities[i101];
+                        float d011 = densities[i011];
+                        float d111 = densities[i111];
 
-                byte matID = metadata[i000];
+                        // === SELECCIÓN DE MATERIAL POR CELDA ===
+                        float bestSolidDensity = float.MaxValue;
+                        byte bestMatID = 0;
 
-                float d000 = densities[i000];
-                float d100 = densities[i100];
-                float d010 = densities[i010];
-                float d110 = densities[i110];
-                float d001 = densities[i001];
-                float d101 = densities[i101];
-                float d011 = densities[i011];
-                float d111 = densities[i111];
+                        TryPickCornerMaterial(i000, d000, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i100, d100, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i010, d010, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i110, d110, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i001, d001, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i101, d101, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i011, d011, ref bestSolidDensity, ref bestMatID);
+                        TryPickCornerMaterial(i111, d111, ref bestSolidDensity, ref bestMatID);
 
-                // === SELECCIÓN DE MATERIAL POR CELDA ===
-                float bestSolidDensity = float.MaxValue;
-                byte bestMatID = 0;
+                        if (bestMatID != 0) matID = bestMatID;
 
-                TryPickCornerMaterial(i000, d000, ref bestSolidDensity, ref bestMatID);
-                TryPickCornerMaterial(i100, d100, ref bestSolidDensity, ref bestMatID);
-                TryPickCornerMaterial(i010, d010, ref bestSolidDensity, ref bestMatID);
-                TryPickCornerMaterial(i110, d110, ref bestSolidDensity, ref bestMatID);
-                TryPickCornerMaterial(i001, d001, ref bestSolidDensity, ref bestMatID);
-                TryPickCornerMaterial(i101, d101, ref bestSolidDensity, ref bestMatID);
-                TryPickCornerMaterial(i011, d011, ref bestSolidDensity, ref bestMatID);
-                TryPickCornerMaterial(i111, d111, ref bestSolidDensity, ref bestMatID);
+                        int cubeIndex = 0;
+                        if (d000 < 0f) cubeIndex |= 1;
+                        if (d100 < 0f) cubeIndex |= 2;
+                        if (d110 < 0f) cubeIndex |= 4;
+                        if (d010 < 0f) cubeIndex |= 8;
+                        if (d001 < 0f) cubeIndex |= 16;
+                        if (d101 < 0f) cubeIndex |= 32;
+                        if (d111 < 0f) cubeIndex |= 64;
+                        if (d011 < 0f) cubeIndex |= 128;
 
-                if (bestMatID != 0) matID = bestMatID;
+                        int edgeMask = edgeTable[cubeIndex];
+                        if (edgeMask == 0) continue;
 
-                int cubeIndex = 0;
-                if (d000 < 0f) cubeIndex |= 1;
-                if (d100 < 0f) cubeIndex |= 2;
-                if (d110 < 0f) cubeIndex |= 4;
-                if (d010 < 0f) cubeIndex |= 8;
-                if (d001 < 0f) cubeIndex |= 16;
-                if (d101 < 0f) cubeIndex |= 32;
-                if (d111 < 0f) cubeIndex |= 64;
-                if (d011 < 0f) cubeIndex |= 128;
+                        // === INTERPOLACIÓN DE VÉRTICES ===
+                        float3 basePos = new float3(x, y, z) * voxelSize;
 
-                int edgeMask = edgeTable[cubeIndex];
-                if (edgeMask == 0) continue;
+                        float3 p000 = basePos;
+                        float3 p100 = basePos + new float3(voxelSize, 0f, 0f);
+                        float3 p110 = basePos + new float3(voxelSize, voxelSize, 0f);
+                        float3 p010 = basePos + new float3(0f, voxelSize, 0f);
+                        float3 p001 = basePos + new float3(0f, 0f, voxelSize);
+                        float3 p101 = basePos + new float3(voxelSize, 0f, voxelSize);
+                        float3 p111 = basePos + new float3(voxelSize, voxelSize, voxelSize);
+                        float3 p011 = basePos + new float3(0f, voxelSize, voxelSize);
 
-                // === INTERPOLACIÓN DE VÉRTICES ===
-                float3 basePos = new float3(x, y, z) * voxelSize;
+                        FixedList512Bytes<float3> ev = default;
+                        for (int i = 0; i < 12; i++) ev.Add(float3.zero);
 
-                float3 p000 = basePos;
-                float3 p100 = basePos + new float3(voxelSize, 0f, 0f);
-                float3 p110 = basePos + new float3(voxelSize, voxelSize, 0f);
-                float3 p010 = basePos + new float3(0f, voxelSize, 0f);
-                float3 p001 = basePos + new float3(0f, 0f, voxelSize);
-                float3 p101 = basePos + new float3(voxelSize, 0f, voxelSize);
-                float3 p111 = basePos + new float3(voxelSize, voxelSize, voxelSize);
-                float3 p011 = basePos + new float3(0f, voxelSize, voxelSize);
+                        if ((edgeMask & 1) != 0) ev[0] = InterpolateIso(p000, p100, d000, d100);
+                        if ((edgeMask & 2) != 0) ev[1] = InterpolateIso(p100, p110, d100, d110);
+                        if ((edgeMask & 4) != 0) ev[2] = InterpolateIso(p110, p010, d110, d010);
+                        if ((edgeMask & 8) != 0) ev[3] = InterpolateIso(p010, p000, d010, d000);
+                        if ((edgeMask & 16) != 0) ev[4] = InterpolateIso(p001, p101, d001, d101);
+                        if ((edgeMask & 32) != 0) ev[5] = InterpolateIso(p101, p111, d101, d111);
+                        if ((edgeMask & 64) != 0) ev[6] = InterpolateIso(p111, p011, d111, d011);
+                        if ((edgeMask & 128) != 0) ev[7] = InterpolateIso(p011, p001, d011, d001);
+                        if ((edgeMask & 256) != 0) ev[8] = InterpolateIso(p000, p001, d000, d001);
+                        if ((edgeMask & 512) != 0) ev[9] = InterpolateIso(p100, p101, d100, d101);
+                        if ((edgeMask & 1024) != 0) ev[10] = InterpolateIso(p110, p111, d110, d111);
+                        if ((edgeMask & 2048) != 0) ev[11] = InterpolateIso(p010, p011, d010, d011);
 
-                FixedList512Bytes<float3> ev = default;
-                for (int i = 0; i < 12; i++) ev.Add(float3.zero);
-
-                if ((edgeMask & 1) != 0) ev[0] = InterpolateIso(p000, p100, d000, d100);
-                if ((edgeMask & 2) != 0) ev[1] = InterpolateIso(p100, p110, d100, d110);
-                if ((edgeMask & 4) != 0) ev[2] = InterpolateIso(p110, p010, d110, d010);
-                if ((edgeMask & 8) != 0) ev[3] = InterpolateIso(p010, p000, d010, d000);
-                if ((edgeMask & 16) != 0) ev[4] = InterpolateIso(p001, p101, d001, d101);
-                if ((edgeMask & 32) != 0) ev[5] = InterpolateIso(p101, p111, d101, d111);
-                if ((edgeMask & 64) != 0) ev[6] = InterpolateIso(p111, p011, d111, d011);
-                if ((edgeMask & 128) != 0) ev[7] = InterpolateIso(p011, p001, d011, d001);
-                if ((edgeMask & 256) != 0) ev[8] = InterpolateIso(p000, p001, d000, d001);
-                if ((edgeMask & 512) != 0) ev[9] = InterpolateIso(p100, p101, d100, d101);
-                if ((edgeMask & 1024) != 0) ev[10] = InterpolateIso(p110, p111, d110, d111);
-                if ((edgeMask & 2048) != 0) ev[11] = InterpolateIso(p010, p011, d010, d011);
-
-                // === ENSAMBLAJE DE TRIÁNGULOS ===
-                int triBase = cubeIndex * 16;
-                for (int i = 0; i < 16; i += 3) {
-                    int t0 = triTable[triBase + i];
-                    if (t0 == -1) break;
+                        // === ENSAMBLAJE DE TRIÁNGULOS ===
+                        int triBase = cubeIndex * 16;
+                        for (int i = 0; i < 16; i += 3) {
+                            int t0 = triTable[triBase + i];
+                            if (t0 == -1) break;
+                        }
+                    }
                 }
             }
         }

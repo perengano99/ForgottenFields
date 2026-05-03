@@ -21,7 +21,8 @@ public static class TerrainSculptor {
         NativeArray<byte> metadata,
         int3 gridSize,
         float voxelSize,
-        Vector3 localHitPoint,
+        Vector3 globalHitPoint,
+        Vector3 chunkWorldPosition,
         float radius,
         float strength,
         BrushShape shape,
@@ -37,7 +38,8 @@ public static class TerrainSculptor {
             metadata,
             gridSize,
             voxelSize,
-            localHitPoint,
+            globalHitPoint,
+            chunkWorldPosition,
             radius,
             strength,
             shape,
@@ -56,7 +58,8 @@ public static class TerrainSculptor {
         NativeArray<byte> metadata,
         int3 gridSize,
         float voxelSize,
-        Vector3 localHitPoint,
+        Vector3 globalHitPoint,
+        Vector3 chunkWorldPosition,
         float radius,
         float strength,
         BrushShape shape,
@@ -78,7 +81,8 @@ public static class TerrainSculptor {
             sourceDensities = sourceDensities,
             gridSize = gridSize,
             voxelSize = voxelSize,
-            hitPoint = new float3(localHitPoint.x, localHitPoint.y, localHitPoint.z),
+            globalHitPoint = new float3(globalHitPoint.x, globalHitPoint.y, globalHitPoint.z),
+            chunkWorldPosition = new float3(chunkWorldPosition.x, chunkWorldPosition.y, chunkWorldPosition.z),
             radius = radius,
             strength = strength,
             brushShape = shape,
@@ -101,7 +105,8 @@ public static class TerrainSculptor {
         NativeArray<float> densities,
         int3 gridSize,
         float voxelSize,
-        Vector3 localHitPoint,
+        Vector3 globalHitPoint,
+        Vector3 chunkWorldPosition,
         float radius,
         byte targetMaterialID,
         JobHandle dependsOn = default) {
@@ -113,7 +118,8 @@ public static class TerrainSculptor {
             Densities = densities,
             gridSize = gridSize,
             voxelSize = voxelSize,
-            localHitPoint = localHitPoint,
+            globalHitPoint = globalHitPoint,
+            chunkWorldPosition = chunkWorldPosition,
             radius = radius,
             targetMaterialID = targetMaterialID
         };
@@ -127,7 +133,8 @@ public static class TerrainSculptor {
         [ReadOnly] public NativeArray<float> Densities;
         public int3 gridSize;
         public float voxelSize;
-        public Vector3 localHitPoint;
+        public Vector3 globalHitPoint;
+        public Vector3 chunkWorldPosition;
         public float radius;
         public byte targetMaterialID;
 
@@ -143,8 +150,9 @@ public static class TerrainSculptor {
 
             if (x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
 
-            Vector3 voxelPos = new Vector3(x, y, z) * voxelSize;
-            if (Vector3.Distance(voxelPos, localHitPoint) >= radius) return;
+            Vector3 localVoxelPos = new Vector3(x, y, z) * voxelSize;
+            Vector3 globalVoxelPos = chunkWorldPosition + localVoxelPos;
+            if (Vector3.Distance(globalVoxelPos, globalHitPoint) >= radius) return;
             if (Densities[index] >= 0f) return;
 
             Metadata[index] = targetMaterialID;
@@ -161,7 +169,8 @@ public static class TerrainSculptor {
         public int3 gridSize;
         public float voxelSize;
 
-        public float3 hitPoint;
+        public float3 globalHitPoint;
+        public float3 chunkWorldPosition;
         public float radius;
         public float strength;
 
@@ -194,26 +203,27 @@ public static class TerrainSculptor {
 
                 if (x > gridSize.x || y > gridSize.y || z > gridSize.z) continue;
 
-                float3 voxelPos = new float3(x, y, z) * voxelSize;
+                float3 localVoxelPos = new float3(x, y, z) * voxelSize;
+                float3 globalVoxelPos = chunkWorldPosition + localVoxelPos;
 
                 bool affects = false;
                 float shapeFactor = 1f;
 
                 switch (brushShape) {
                     case BrushShape.Sphere:
-                        EvaluateSphere(voxelPos, ref affects, ref shapeFactor);
+                        EvaluateSphere(globalVoxelPos, ref affects, ref shapeFactor);
                         break;
 
                     case BrushShape.Box:
-                        EvaluateBox(voxelPos, ref affects, ref shapeFactor);
+                        EvaluateBox(globalVoxelPos, ref affects, ref shapeFactor);
                         break;
 
                     case BrushShape.VerticalPillar:
-                        EvaluateVerticalPillar(voxelPos, ref affects, ref shapeFactor);
+                        EvaluateVerticalPillar(globalVoxelPos, ref affects, ref shapeFactor);
                         break;
 
                     case BrushShape.NoiseFeature:
-                        EvaluateNoiseFeature(voxelPos, ref affects, ref shapeFactor);
+                        EvaluateNoiseFeature(globalVoxelPos, ref affects, ref shapeFactor);
                         break;
                 }
 
@@ -222,7 +232,7 @@ public static class TerrainSculptor {
                 float oldDensity = sourceDensities[index];
                 bool wasAir = oldDensity > isoLevel;
 
-                float newDensity = ComputeQuantizedDensity(oldDensity, voxelPos, shapeFactor);
+                float newDensity = ComputeQuantizedDensity(oldDensity, globalVoxelPos, shapeFactor);
                 Densities[index] = newDensity;
 
                 bool isNowSolid = newDensity <= isoLevel;
@@ -230,7 +240,7 @@ public static class TerrainSculptor {
                 if (!wasAir || !isNowSolid) continue;
                 if (hitMaterial == 0) continue;
 
-                float radialDist = math.distance(voxelPos, hitPoint);
+                float radialDist = math.distance(globalVoxelPos, globalHitPoint);
                 if (radialDist <= coreRadius)
                     Metadata[index] = hitMaterial;
             }
@@ -248,8 +258,9 @@ public static class TerrainSculptor {
 
                     if (x > gridSize.x || y > gridSize.y || z > gridSize.z) continue;
 
-                    float3 voxelPos = new float3(x, y, z) * voxelSize;
-                    float radialDist = math.distance(voxelPos, hitPoint);
+                    float3 localVoxelPos = new float3(x, y, z) * voxelSize;
+                    float3 globalVoxelPos = chunkWorldPosition + localVoxelPos;
+                    float radialDist = math.distance(globalVoxelPos, globalHitPoint);
                     if (radialDist > injectRadius) continue;
 
                     float oldDensity = sourceDensities[index];
@@ -301,7 +312,7 @@ public static class TerrainSculptor {
 
         // === EVALUACIÓN ESPACIAL ===
         private void EvaluateSphere(float3 voxelPos, ref bool affects, ref float factor) {
-            float dist = math.distance(voxelPos, hitPoint);
+            float dist = math.distance(voxelPos, globalHitPoint);
             if (dist > radius) return;
 
             affects = true;
@@ -309,7 +320,7 @@ public static class TerrainSculptor {
         }
 
         private void EvaluateBox(float3 voxelPos, ref bool affects, ref float factor) {
-            float3 d = math.abs(voxelPos - hitPoint);
+            float3 d = math.abs(voxelPos - globalHitPoint);
             if (d.x > radius || d.y > radius || d.z > radius) return;
 
             affects = true;
@@ -317,20 +328,20 @@ public static class TerrainSculptor {
         }
 
         private void EvaluateVerticalPillar(float3 voxelPos, ref bool affects, ref float factor) {
-            float2 xzDist = new float2(voxelPos.x - hitPoint.x, voxelPos.z - hitPoint.z);
+            float2 xzDist = new float2(voxelPos.x - globalHitPoint.x, voxelPos.z - globalHitPoint.z);
             float radial = math.length(xzDist);
             if (radial > radius) return;
 
-            float lower = hitPoint.y;
-            float upper = hitPoint.y;
+            float lower = globalHitPoint.y;
+            float upper = globalHitPoint.y;
 
             if (brushType == BrushType.SphereAdd)
-                upper = hitPoint.y + radius * 2f;
+                upper = globalHitPoint.y + radius * 2f;
             else if (brushType == BrushType.SphereSubtract)
-                lower = hitPoint.y - radius * 2f;
+                lower = globalHitPoint.y - radius * 2f;
             else {
-                lower = hitPoint.y - radius;
-                upper = hitPoint.y + radius;
+                lower = globalHitPoint.y - radius;
+                upper = globalHitPoint.y + radius;
             }
 
             if (voxelPos.y < lower || voxelPos.y > upper) return;
@@ -341,7 +352,7 @@ public static class TerrainSculptor {
 
         private void EvaluateNoiseFeature(float3 voxelPos, ref bool affects, ref float factor) {
             float2 xz = new float2(voxelPos.x, voxelPos.z);
-            float2 hitXZ = new float2(hitPoint.x, hitPoint.z);
+            float2 hitXZ = new float2(globalHitPoint.x, globalHitPoint.z);
             float radial = math.length(xz - hitXZ);
             if (radial > radius) return;
 
@@ -367,7 +378,7 @@ public static class TerrainSculptor {
                     return current + deltaDensity;
                 }
                 case BrushType.Flatten: {
-                    float target = voxelPos.y - hitPoint.y;
+                    float target = voxelPos.y - globalHitPoint.y;
                     float dir = math.sign(target - current);
                     float deltaDensity = dir * step;
                     float next = current + deltaDensity;

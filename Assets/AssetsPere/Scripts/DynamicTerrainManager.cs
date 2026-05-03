@@ -7,8 +7,8 @@ using UnityEngine;
 public enum EditMode { Sculpt, Paint }
 public enum SculptMode { Add, Subtract, Flatten, Smooth }
 
-// -[] El sistema vertical no funciona como se espera. El objetivo es que esculpa de manera vertical, sin importar la orentacion de la vista o el punto de impacto. Tampoco debe funcionar en un radio de esfera, sino como un plano desde el punto vertical.
-// -[] El esculpido en general sigue siendo muy suave y no genera terreno estilo low poly.
+// -[] (REFACTORIZAR Y ACOMODAR EN CLASE AISLADA TODO EL SISTEMA DE EDICION) El sistema vertical no funciona como se espera. El objetivo es que esculpa de manera vertical, sin importar la orentacion de la vista o el punto de impacto. Tampoco debe funcionar en un radio de esfera, sino como un plano desde el punto vertical.
+// -[I] El esculpido en general sigue siendo muy suave y no genera terreno estilo low poly.
 
 [ExecuteAlways]
 public class DynamicTerrainManager : MonoBehaviour {
@@ -50,6 +50,7 @@ public class DynamicTerrainManager : MonoBehaviour {
 
     // === ARREGLO TRIDIMENSIONAL DE CHUNKS ===
     private TerrainChunk[,,] chunks;
+    private Dictionary<Vector3Int, TerrainChunk> activeChunks = new Dictionary<Vector3Int, TerrainChunk>();
 
     // === ACCESO EXTERNO ===
     public TerrainChunk[,,] Chunks => chunks;
@@ -95,8 +96,12 @@ public class DynamicTerrainManager : MonoBehaviour {
         Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
         if (!RaycastVoxel(ray, out Vector3 hitPoint, out TerrainChunk hitChunk)) return;
 
+        float brushRadius = BrushRadius;
+        List<TerrainChunk> affectedChunks = GetChunksInRadius(hitPoint, brushRadius);
+        if (affectedChunks.Count == 0) return;
+
         if (currentEditMode == EditMode.Paint) {
-            ApplyPaintBrush(hitPoint);
+            ApplyPaintBrush(hitPoint, affectedChunks);
             return;
         }
 
@@ -107,7 +112,7 @@ public class DynamicTerrainManager : MonoBehaviour {
         else mode = SculptMode.Add;
 
         byte hitMaterial = PickRayHitMat(hitChunk, hitPoint);
-        ApplySculptBrush(hitPoint, mode, hitMaterial);
+        ApplySculptBrush(hitPoint, mode, hitMaterial, affectedChunks);
     }
 
     private byte PickRayHitMat(TerrainChunk chunk, Vector3 hitPoint) {
@@ -133,6 +138,7 @@ public class DynamicTerrainManager : MonoBehaviour {
         DestroyChunks();
 
         chunks = new TerrainChunk[worldSizeX, worldSizeY, worldSizeZ];
+        activeChunks.Clear();
 
         float chunkWorldSize = chunkGridSize * voxelSize;
 
@@ -153,6 +159,7 @@ public class DynamicTerrainManager : MonoBehaviour {
                     chunk.GenerateBasicTerrain();
                     chunk.UpdateMesh();
                     chunks[x, y, z] = chunk;
+                    activeChunks[new Vector3Int(x, y, z)] = chunk;
                 }
             }
         }
@@ -170,6 +177,8 @@ public class DynamicTerrainManager : MonoBehaviour {
             chunks = null;
         }
 
+        activeChunks.Clear();
+
         for (int i = transform.childCount - 1; i >= 0; i--)
             DestroyImmediate(transform.GetChild(i).gameObject);
     }
@@ -185,17 +194,15 @@ public class DynamicTerrainManager : MonoBehaviour {
     }
 
     // === ESCULPIDO ===
-    public void ApplySculptBrush(Vector3 worldHitPoint, SculptMode mode, byte hitMaterial = 0) {
+    public void ApplySculptBrush(Vector3 worldHitPoint, SculptMode mode, byte hitMaterial, List<TerrainChunk> affectedChunks) {
         if (!isEditing || chunks == null) return;
+        if (affectedChunks == null || affectedChunks.Count == 0) return;
 
-        List<TerrainChunk> chunksInRadius = GetChunksInRadius(worldHitPoint, BrushRadius);
-        if (chunksInRadius.Count == 0) return;
+        List<SculptBatchEntry> entries = new List<SculptBatchEntry>(affectedChunks.Count);
+        NativeList<JobHandle> jobHandles = new NativeList<JobHandle>(Allocator.Temp);
 
-        List<SculptBatchEntry> entries = new List<SculptBatchEntry>(chunksInRadius.Count);
-        List<JobHandle> handles = new List<JobHandle>(chunksInRadius.Count);
-
-        for (int i = 0; i < chunksInRadius.Count; i++) {
-            TerrainChunk chunk = chunksInRadius[i];
+        for (int i = 0; i < affectedChunks.Count; i++) {
+            TerrainChunk chunk = affectedChunks[i];
             if (chunk == null) continue;
             if (!chunk.Densities.IsCreated || !chunk.Metadata.IsCreated) continue;
 
@@ -219,6 +226,7 @@ public class DynamicTerrainManager : MonoBehaviour {
 
             if (mode == SculptMode.Smooth) {
                 ApplySmoothToChunk(chunk, localHit);
+                jobHandles.Add(default);
                 entries.Add(entry);
                 continue;
             }
@@ -231,7 +239,8 @@ public class DynamicTerrainManager : MonoBehaviour {
                 chunk.Metadata,
                 new int3(chunkGridSize, chunkGridSize, chunkGridSize),
                 voxelSize,
-                localHit,
+                worldHitPoint,
+                chunk.transform.position,
                 BrushRadius,
                 BrushStrength,
                 CurrentBrushShape,
@@ -244,17 +253,13 @@ public class DynamicTerrainManager : MonoBehaviour {
             entry.hasJob = true;
             entry.sourceDensities = sourceDensities;
             entries.Add(entry);
-            handles.Add(handle);
+            jobHandles.Add(handle);
         }
 
-        if (handles.Count > 0) {
-            NativeArray<JobHandle> handleArray = new NativeArray<JobHandle>(handles.Count, Allocator.Temp);
-            for (int i = 0; i < handles.Count; i++)
-                handleArray[i] = handles[i];
+        if (jobHandles.Length > 0)
+            JobHandle.CompleteAll(jobHandles.AsArray());
 
-            JobHandle.CompleteAll(handleArray);
-            handleArray.Dispose();
-        }
+        SyncAffectedChunkBorders(affectedChunks);
 
         for (int i = 0; i < entries.Count; i++) {
             SculptBatchEntry entry = entries[i];
@@ -266,8 +271,14 @@ public class DynamicTerrainManager : MonoBehaviour {
                 entry.sourceDensities.Dispose();
         }
 
-        for (int i = 0; i < entries.Count; i++)
-            entries[i].chunk.UpdateMesh();
+        for (int i = 0; i < affectedChunks.Count; i++) {
+            TerrainChunk chunk = affectedChunks[i];
+            if (chunk == null) continue;
+            if (!chunk.Densities.IsCreated || !chunk.Metadata.IsCreated) continue;
+            chunk.UpdateMesh();
+        }
+
+        jobHandles.Dispose();
     }
 
     private void CaptureChunkSnapshot(TerrainChunk chunk, out float[] preDensities, out byte[] preMetadata) {
@@ -478,17 +489,14 @@ public class DynamicTerrainManager : MonoBehaviour {
     }
 
     // === PINTURA ===
-    public void ApplyPaintBrush(Vector3 worldHitPoint) {
+    public void ApplyPaintBrush(Vector3 worldHitPoint, List<TerrainChunk> affectedChunks) {
         if (!isEditing || chunks == null) return;
+        if (affectedChunks == null || affectedChunks.Count == 0) return;
 
-        List<TerrainChunk> chunksInRadius = GetChunksInRadius(worldHitPoint, BrushRadius);
-        if (chunksInRadius.Count == 0) return;
+        NativeList<JobHandle> jobHandles = new NativeList<JobHandle>(Allocator.Temp);
 
-        List<TerrainChunk> affectedChunks = new List<TerrainChunk>(chunksInRadius.Count);
-        List<JobHandle> handles = new List<JobHandle>(chunksInRadius.Count);
-
-        for (int i = 0; i < chunksInRadius.Count; i++) {
-            TerrainChunk chunk = chunksInRadius[i];
+        for (int i = 0; i < affectedChunks.Count; i++) {
+            TerrainChunk chunk = affectedChunks[i];
             if (chunk == null) continue;
             if (!chunk.Densities.IsCreated || !chunk.Metadata.IsCreated) continue;
 
@@ -498,65 +506,99 @@ public class DynamicTerrainManager : MonoBehaviour {
                 chunk.Densities,
                 new int3(chunkGridSize, chunkGridSize, chunkGridSize),
                 voxelSize,
-                localHit,
+                worldHitPoint,
+                chunk.transform.position,
                 BrushRadius,
                 SelectedMaterialID
             );
 
-            handles.Add(handle);
-            affectedChunks.Add(chunk);
+            jobHandles.Add(handle);
         }
 
-        if (handles.Count > 0) {
-            NativeArray<JobHandle> handleArray = new NativeArray<JobHandle>(handles.Count, Allocator.Temp);
-            for (int i = 0; i < handles.Count; i++)
-                handleArray[i] = handles[i];
+        if (jobHandles.Length > 0)
+            JobHandle.CompleteAll(jobHandles.AsArray());
 
-            JobHandle.CompleteAll(handleArray);
-            handleArray.Dispose();
+        SyncAffectedChunkBorders(affectedChunks);
+
+        for (int i = 0; i < affectedChunks.Count; i++) {
+            TerrainChunk chunk = affectedChunks[i];
+            if (chunk == null) continue;
+            if (!chunk.Densities.IsCreated || !chunk.Metadata.IsCreated) continue;
+            chunk.UpdateMesh();
         }
 
-        for (int i = 0; i < affectedChunks.Count; i++)
-            affectedChunks[i].UpdateMesh();
+        jobHandles.Dispose();
+    }
+
+    private void SyncAffectedChunkBorders(List<TerrainChunk> affectedChunks) {
+        if (affectedChunks == null || affectedChunks.Count == 0) return;
+        if (activeChunks == null || activeChunks.Count == 0) return;
+
+        for (int i = 0; i < affectedChunks.Count; i++) {
+            TerrainChunk chunk = affectedChunks[i];
+            if (chunk == null) continue;
+            if (!TryGetChunkCoord(chunk, out Vector3Int coord)) continue;
+
+            Vector3Int rightCoord = coord + Vector3Int.right;
+            if (activeChunks.TryGetValue(rightCoord, out TerrainChunk rightNeighbor) && rightNeighbor != null)
+                chunk.SyncBordersWith(rightNeighbor, Vector3Int.right);
+
+            Vector3Int leftCoord = coord + Vector3Int.left;
+            if (activeChunks.TryGetValue(leftCoord, out TerrainChunk leftNeighbor) && leftNeighbor != null)
+                chunk.SyncBordersWith(leftNeighbor, Vector3Int.left);
+
+            Vector3Int upCoord = coord + Vector3Int.up;
+            if (activeChunks.TryGetValue(upCoord, out TerrainChunk upNeighbor) && upNeighbor != null)
+                chunk.SyncBordersWith(upNeighbor, Vector3Int.up);
+
+            Vector3Int downCoord = coord + Vector3Int.down;
+            if (activeChunks.TryGetValue(downCoord, out TerrainChunk downNeighbor) && downNeighbor != null)
+                chunk.SyncBordersWith(downNeighbor, Vector3Int.down);
+
+            Vector3Int forwardCoord = coord + Vector3Int.forward;
+            if (activeChunks.TryGetValue(forwardCoord, out TerrainChunk forwardNeighbor) && forwardNeighbor != null)
+                chunk.SyncBordersWith(forwardNeighbor, Vector3Int.forward);
+
+            Vector3Int backCoord = coord + Vector3Int.back;
+            if (activeChunks.TryGetValue(backCoord, out TerrainChunk backNeighbor) && backNeighbor != null)
+                chunk.SyncBordersWith(backNeighbor, Vector3Int.back);
+        }
+    }
+
+    private bool TryGetChunkCoord(TerrainChunk chunk, out Vector3Int coord) {
+        foreach (var kvp in activeChunks) {
+            if (kvp.Value != chunk) continue;
+
+            coord = kvp.Key;
+            return true;
+        }
+
+        coord = default;
+        return false;
     }
 
     private List<TerrainChunk> GetChunksInRadius(Vector3 hitPoint, float radius) {
-        List<TerrainChunk> result = new List<TerrainChunk>();
-        if (chunks == null) return result;
+        List<TerrainChunk> affectedChunks = new List<TerrainChunk>();
+        if (activeChunks == null || activeChunks.Count == 0) return affectedChunks;
+
+        float expandedRadius = radius + voxelSize * 2f;
+        Bounds brushBounds = new Bounds(hitPoint, Vector3.one * (expandedRadius * 2f));
 
         float chunkSize = chunkGridSize * voxelSize;
+        Vector3 chunkExtents = Vector3.one * (chunkSize * 0.5f);
 
-        Vector3 minBounds = hitPoint - new Vector3(radius, radius, radius);
-        Vector3 maxBounds = hitPoint + new Vector3(radius, radius, radius);
+        foreach (var kvp in activeChunks) {
+            TerrainChunk chunk = kvp.Value;
+            if (chunk == null) continue;
 
-        Vector3 localMin = minBounds - transform.position;
-        Vector3 localMax = maxBounds - transform.position;
+            Vector3 chunkCenter = chunk.transform.position + chunkExtents;
+            Bounds chunkBounds = new Bounds(chunkCenter, Vector3.one * chunkSize);
+            if (!chunkBounds.Intersects(brushBounds)) continue;
 
-        int minChunkX = Mathf.FloorToInt(localMin.x / chunkSize);
-        int minChunkY = Mathf.FloorToInt(localMin.y / chunkSize);
-        int minChunkZ = Mathf.FloorToInt(localMin.z / chunkSize);
+            affectedChunks.Add(chunk);
+        }
 
-        int maxChunkX = Mathf.FloorToInt(localMax.x / chunkSize);
-        int maxChunkY = Mathf.FloorToInt(localMax.y / chunkSize);
-        int maxChunkZ = Mathf.FloorToInt(localMax.z / chunkSize);
-
-        minChunkX = Mathf.Clamp(minChunkX, 0, worldSizeX - 1);
-        minChunkY = Mathf.Clamp(minChunkY, 0, worldSizeY - 1);
-        minChunkZ = Mathf.Clamp(minChunkZ, 0, worldSizeZ - 1);
-
-        maxChunkX = Mathf.Clamp(maxChunkX, 0, worldSizeX - 1);
-        maxChunkY = Mathf.Clamp(maxChunkY, 0, worldSizeY - 1);
-        maxChunkZ = Mathf.Clamp(maxChunkZ, 0, worldSizeZ - 1);
-
-        for (int x = minChunkX; x <= maxChunkX; x++)
-            for (int y = minChunkY; y <= maxChunkY; y++)
-                for (int z = minChunkZ; z <= maxChunkZ; z++) {
-                    TerrainChunk chunk = chunks[x, y, z];
-                    if (chunk != null)
-                        result.Add(chunk);
-                }
-
-        return result;
+        return affectedChunks;
     }
 
     private bool PaintChunk(TerrainChunk chunk, Vector3 localHit) {
