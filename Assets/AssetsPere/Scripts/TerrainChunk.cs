@@ -519,7 +519,6 @@ public class TerrainChunk : MonoBehaviour {
     }
 
     // === NOTA DE ARQUITECTURA ===
-    // Nota: Mecánicas de debris y aplastamiento removidas por diseño.
     // Pendiente: Implementar shading de partículas (vfx_shading_particles) para desprendimiento visual.
 
     // === VISUALIZACIÓN GIZMOS (SCALAR FIELD) ===
