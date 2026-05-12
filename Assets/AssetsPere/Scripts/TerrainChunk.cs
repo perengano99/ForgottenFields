@@ -436,6 +436,18 @@ public class TerrainChunk : MonoBehaviour {
         int expectedPointCount = (gridSize.x + 1) * (gridSize.y + 1) * (gridSize.z + 1);
         if (densities.Length != expectedPointCount || metadata.Length != expectedPointCount) return;
 
+        _ = new MarchingCubesJob {
+            densities = densities,
+            metadata = metadata,
+            edgeTable = nativeEdgeTable,
+            triTable = nativeTriTable,
+            gridSize = gridSize,
+            voxelSize = voxelSize,
+            forceLowPoly = true,
+            outCellTriangleCounts = cellTriangleCounts,
+            outCellVertexOffsets = cellVertexOffsets
+        };
+
         CountTrianglesJob countJob = new CountTrianglesJob {
             densities = densities,
             edgeTable = nativeEdgeTable,
@@ -563,14 +575,9 @@ public class TerrainChunk : MonoBehaviour {
         }
 
         private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
-            float t;
-            if (forceLowPoly) t = 0.5f;
-            else {
-                float denom = d0 - d1;
-                t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
-                t = math.clamp(t, 0f, 1f);
-            }
-
+            float denom = d0 - d1;
+            float t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
+            t = math.clamp(t, 0f, 1f);
             return math.lerp(p0, p1, t);
         }
 
@@ -971,14 +978,9 @@ public class TerrainChunk : MonoBehaviour {
         }
 
         private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
-            float t;
-            if (forceLowPoly) t = 0.5f;
-            else {
-                float denom = d0 - d1;
-                t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
-                t = math.clamp(t, 0f, 1f);
-            }
-
+            float denom = d0 - d1;
+            float t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
+            t = math.clamp(t, 0f, 1f);
             return math.lerp(p0, p1, t);
         }
 

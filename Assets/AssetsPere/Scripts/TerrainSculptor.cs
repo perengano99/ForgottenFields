@@ -85,6 +85,7 @@ public static class TerrainSculptor {
             chunkWorldPosition = new float3(chunkWorldPosition.x, chunkWorldPosition.y, chunkWorldPosition.z),
             radius = radius,
             strength = strength,
+            fixedStepAmount = math.min(0.05f, math.max(0.0001f, dt)),
             brushShape = shape,
             brushType = type,
             isVertical = isVertical,
@@ -169,6 +170,7 @@ public static class TerrainSculptor {
         public float3 chunkWorldPosition;
         public float radius;
         public float strength;
+        public float fixedStepAmount;
 
         public BrushShape brushShape;
         public BrushType brushType;
@@ -228,16 +230,14 @@ public static class TerrainSculptor {
                 if (brushSDF > 0f) continue;
 
                 float oldDensity = sourceDensities[index];
-                float newDensity;
+                float newDensity = Densities[index];
 
                 if (isAdding)
-                    newDensity = TerrainCSG.Union(oldDensity, brushSDF);
+                    newDensity = TerrainCSG.BrushUnion(oldDensity, brushSDF, strength * fixedStepAmount);
                 else if (isSubtracting)
-                    newDensity = TerrainCSG.Difference(oldDensity, brushSDF);
+                    newDensity = TerrainCSG.BrushDifference(oldDensity, brushSDF, strength * fixedStepAmount);
                 else if (isSmoothing)
                     newDensity = TerrainCSG.SmoothUnion(oldDensity, brushSDF, math.max(0.0001f, strength));
-                else
-                    newDensity = oldDensity;
 
                 Densities[index] = newDensity;
 
