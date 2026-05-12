@@ -1,6 +1,7 @@
 using Unity.Mathematics;
 
-public struct TerrainCSG {
+public static class TerrainCSG {
+    // === SDF Shapes ===
     public static float SDFSphere(float3 p, float radius) {
         return math.length(p) - radius;
     }
@@ -14,6 +15,7 @@ public struct TerrainCSG {
         return math.length(pXZ) - radius;
     }
 
+    // === CSG Operations ===
     public static float Union(float d1, float d2) {
         return math.min(d1, d2);
     }

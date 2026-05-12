@@ -228,16 +228,14 @@ public static class TerrainSculptor {
                 if (brushSDF > 0f) continue;
 
                 float oldDensity = sourceDensities[index];
-                float newDensity;
+                float newDensity = Densities[index];
 
                 if (isAdding)
-                    newDensity = TerrainCSG.Union(oldDensity, brushSDF);
+                    newDensity = TerrainCSG.Union(Densities[index], brushSDF);
                 else if (isSubtracting)
-                    newDensity = TerrainCSG.Difference(oldDensity, brushSDF);
+                    newDensity = TerrainCSG.Difference(Densities[index], brushSDF);
                 else if (isSmoothing)
-                    newDensity = TerrainCSG.SmoothUnion(oldDensity, brushSDF, math.max(0.0001f, strength));
-                else
-                    newDensity = oldDensity;
+                    newDensity = TerrainCSG.SmoothUnion(Densities[index], brushSDF, math.max(0.0001f, strength));
 
                 Densities[index] = newDensity;
 

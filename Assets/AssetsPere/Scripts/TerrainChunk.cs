@@ -436,6 +436,18 @@ public class TerrainChunk : MonoBehaviour {
         int expectedPointCount = (gridSize.x + 1) * (gridSize.y + 1) * (gridSize.z + 1);
         if (densities.Length != expectedPointCount || metadata.Length != expectedPointCount) return;
 
+        _ = new MarchingCubesJob {
+            densities = densities,
+            metadata = metadata,
+            edgeTable = nativeEdgeTable,
+            triTable = nativeTriTable,
+            gridSize = gridSize,
+            voxelSize = voxelSize,
+            forceLowPoly = true,
+            outCellTriangleCounts = cellTriangleCounts,
+            outCellVertexOffsets = cellVertexOffsets
+        };
+
         CountTrianglesJob countJob = new CountTrianglesJob {
             densities = densities,
             edgeTable = nativeEdgeTable,
@@ -562,15 +574,13 @@ public class TerrainChunk : MonoBehaviour {
             }
         }
 
-        private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
-            float t;
-            if (forceLowPoly) t = 0.5f;
-            else {
-                float denom = d0 - d1;
-                t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
-                t = math.clamp(t, 0f, 1f);
+        private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1, bool forceLowPoly) {
+            if (forceLowPoly) {
+                return math.lerp(p0, p1, 0.5f);
             }
-
+            float denom = d0 - d1;
+            float t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
+            t = math.clamp(t, 0f, 1f);
             return math.lerp(p0, p1, t);
         }
 
@@ -645,18 +655,18 @@ public class TerrainChunk : MonoBehaviour {
                         FixedList512Bytes<float3> ev = default;
                         for (int i = 0; i < 12; i++) ev.Add(float3.zero);
 
-                        if ((edgeMask & 1) != 0) ev[0] = InterpolateIso(p000, p100, d000, d100);
-                        if ((edgeMask & 2) != 0) ev[1] = InterpolateIso(p100, p110, d100, d110);
-                        if ((edgeMask & 4) != 0) ev[2] = InterpolateIso(p110, p010, d110, d010);
-                        if ((edgeMask & 8) != 0) ev[3] = InterpolateIso(p010, p000, d010, d000);
-                        if ((edgeMask & 16) != 0) ev[4] = InterpolateIso(p001, p101, d001, d101);
-                        if ((edgeMask & 32) != 0) ev[5] = InterpolateIso(p101, p111, d101, d111);
-                        if ((edgeMask & 64) != 0) ev[6] = InterpolateIso(p111, p011, d111, d011);
-                        if ((edgeMask & 128) != 0) ev[7] = InterpolateIso(p011, p001, d011, d001);
-                        if ((edgeMask & 256) != 0) ev[8] = InterpolateIso(p000, p001, d000, d001);
-                        if ((edgeMask & 512) != 0) ev[9] = InterpolateIso(p100, p101, d100, d101);
-                        if ((edgeMask & 1024) != 0) ev[10] = InterpolateIso(p110, p111, d110, d111);
-                        if ((edgeMask & 2048) != 0) ev[11] = InterpolateIso(p010, p011, d010, d011);
+                        if ((edgeMask & 1) != 0) ev[0] = InterpolateIso(p000, p100, d000, d100, forceLowPoly);
+                        if ((edgeMask & 2) != 0) ev[1] = InterpolateIso(p100, p110, d100, d110, forceLowPoly);
+                        if ((edgeMask & 4) != 0) ev[2] = InterpolateIso(p110, p010, d110, d010, forceLowPoly);
+                        if ((edgeMask & 8) != 0) ev[3] = InterpolateIso(p010, p000, d010, d000, forceLowPoly);
+                        if ((edgeMask & 16) != 0) ev[4] = InterpolateIso(p001, p101, d001, d101, forceLowPoly);
+                        if ((edgeMask & 32) != 0) ev[5] = InterpolateIso(p101, p111, d101, d111, forceLowPoly);
+                        if ((edgeMask & 64) != 0) ev[6] = InterpolateIso(p111, p011, d111, d011, forceLowPoly);
+                        if ((edgeMask & 128) != 0) ev[7] = InterpolateIso(p011, p001, d011, d001, forceLowPoly);
+                        if ((edgeMask & 256) != 0) ev[8] = InterpolateIso(p000, p001, d000, d001, forceLowPoly);
+                        if ((edgeMask & 512) != 0) ev[9] = InterpolateIso(p100, p101, d100, d101, forceLowPoly);
+                        if ((edgeMask & 1024) != 0) ev[10] = InterpolateIso(p110, p111, d110, d111, forceLowPoly);
+                        if ((edgeMask & 2048) != 0) ev[11] = InterpolateIso(p010, p011, d010, d011, forceLowPoly);
 
                         // === ENSAMBLAJE DE TRIÁNGULOS ===
                         int triBase = cubeIndex * 16;
@@ -970,15 +980,13 @@ public class TerrainChunk : MonoBehaviour {
             }
         }
 
-        private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
-            float t;
-            if (forceLowPoly) t = 0.5f;
-            else {
-                float denom = d0 - d1;
-                t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
-                t = math.clamp(t, 0f, 1f);
+        private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1, bool forceLowPoly) {
+            if (forceLowPoly) {
+                return math.lerp(p0, p1, 0.5f);
             }
-
+            float denom = d0 - d1;
+            float t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
+            t = math.clamp(t, 0f, 1f);
             return math.lerp(p0, p1, t);
         }
 
@@ -1067,18 +1075,18 @@ public class TerrainChunk : MonoBehaviour {
                         FixedList512Bytes<float3> ev = default;
                         for (int i = 0; i < 12; i++) ev.Add(float3.zero);
 
-                        if ((edgeMask & 1) != 0) ev[0] = InterpolateIso(p000, p100, d000, d100);
-                        if ((edgeMask & 2) != 0) ev[1] = InterpolateIso(p100, p110, d100, d110);
-                        if ((edgeMask & 4) != 0) ev[2] = InterpolateIso(p110, p010, d110, d010);
-                        if ((edgeMask & 8) != 0) ev[3] = InterpolateIso(p010, p000, d010, d000);
-                        if ((edgeMask & 16) != 0) ev[4] = InterpolateIso(p001, p101, d001, d101);
-                        if ((edgeMask & 32) != 0) ev[5] = InterpolateIso(p101, p111, d101, d111);
-                        if ((edgeMask & 64) != 0) ev[6] = InterpolateIso(p111, p011, d111, d011);
-                        if ((edgeMask & 128) != 0) ev[7] = InterpolateIso(p011, p001, d011, d001);
-                        if ((edgeMask & 256) != 0) ev[8] = InterpolateIso(p000, p001, d000, d001);
-                        if ((edgeMask & 512) != 0) ev[9] = InterpolateIso(p100, p101, d100, d101);
-                        if ((edgeMask & 1024) != 0) ev[10] = InterpolateIso(p110, p111, d110, d111);
-                        if ((edgeMask & 2048) != 0) ev[11] = InterpolateIso(p010, p011, d010, d011);
+                        if ((edgeMask & 1) != 0) ev[0] = InterpolateIso(p000, p100, d000, d100, forceLowPoly);
+                        if ((edgeMask & 2) != 0) ev[1] = InterpolateIso(p100, p110, d100, d110, forceLowPoly);
+                        if ((edgeMask & 4) != 0) ev[2] = InterpolateIso(p110, p010, d110, d010, forceLowPoly);
+                        if ((edgeMask & 8) != 0) ev[3] = InterpolateIso(p010, p000, d010, d000, forceLowPoly);
+                        if ((edgeMask & 16) != 0) ev[4] = InterpolateIso(p001, p101, d001, d101, forceLowPoly);
+                        if ((edgeMask & 32) != 0) ev[5] = InterpolateIso(p101, p111, d101, d111, forceLowPoly);
+                        if ((edgeMask & 64) != 0) ev[6] = InterpolateIso(p111, p011, d111, d011, forceLowPoly);
+                        if ((edgeMask & 128) != 0) ev[7] = InterpolateIso(p011, p001, d011, d001, forceLowPoly);
+                        if ((edgeMask & 256) != 0) ev[8] = InterpolateIso(p000, p001, d000, d001, forceLowPoly);
+                        if ((edgeMask & 512) != 0) ev[9] = InterpolateIso(p100, p101, d100, d101, forceLowPoly);
+                        if ((edgeMask & 1024) != 0) ev[10] = InterpolateIso(p110, p111, d110, d111, forceLowPoly);
+                        if ((edgeMask & 2048) != 0) ev[11] = InterpolateIso(p010, p011, d010, d011, forceLowPoly);
 
                         int triBase = cubeIndex * 16;
                         int writeOffset = cellVertexOffsets[cellIndex];
