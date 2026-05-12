@@ -334,7 +334,7 @@ public class TerrainChunk : MonoBehaviour {
     }
 
     private void Update() {
-        if (!EnsureRegistryIsReady()) return;
+        // if (!EnsureRegistry.IsReady()) return;
 
         if (!isInitialized || needsReinitialization) {
             OnDisable();
@@ -1093,10 +1093,31 @@ public class TerrainChunk : MonoBehaviour {
                             int t1 = triTable[triBase + i + 1];
                             int t2 = triTable[triBase + i + 2];
 
+                            float3 a = ev[t0];
+                            float3 b = ev[t2];
+                            float3 c = ev[t1];
+
+                            float3 e1 = b - a;
+                            float3 e2 = c - a;
+                            float3 faceN = math.cross(e1, e2);
+                            float area2 = math.lengthsq(faceN);
+
+                            float3 center = (a + b + c) * (1f / 3f);
+                            float3 gradN = SampleGradient(center);
+
+                            if (area2 >= 1e-10f) faceN = math.normalize(faceN);
+                            else faceN = math.up();
+
+                            if (!math.all(math.isfinite(gradN))) gradN = faceN;
+                            if (math.dot(gradN, faceN) < 0f) gradN = -gradN;
+
+                            float3 shadowN = math.normalize(math.lerp(faceN, gradN, 0.85f));
+                            if (!math.all(math.isfinite(shadowN))) shadowN = faceN;
+
                             int baseVertex = writeOffset + localTri * 3;
-                            WriteVertex(vertices, indices, baseVertex, ev[t0], SampleGradient(ev[t0]), matID);
-                            WriteVertex(vertices, indices, baseVertex + 1, ev[t2], SampleGradient(ev[t2]), matID);
-                            WriteVertex(vertices, indices, baseVertex + 2, ev[t1], SampleGradient(ev[t1]), matID);
+                            WriteVertex(vertices, indices, baseVertex, a, shadowN, matID);
+                            WriteVertex(vertices, indices, baseVertex + 1, b, shadowN, matID);
+                            WriteVertex(vertices, indices, baseVertex + 2, c, shadowN, matID);
                             localTri++;
                         }
                     }
