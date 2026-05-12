@@ -39,6 +39,7 @@ public class TerrainChunk : MonoBehaviour {
     [SerializeField] private float voxelSize = 1f;
     [SerializeField] private bool showDebugNodes = false;
     [SerializeField] private byte baseMaterialID = 0;
+    public bool forceLowPoly = true;
 
     private MaterialPropertyBlock propBlock;
 
@@ -471,7 +472,8 @@ public class TerrainChunk : MonoBehaviour {
             voxelSize = voxelSize,
             cellTriangleCounts = cellTriangleCounts,
             cellVertexOffsets = cellVertexOffsets,
-            meshData = meshData
+            meshData = meshData,
+            forceLowPoly = forceLowPoly
         };
         meshJob.Schedule().Complete();
 
@@ -543,6 +545,7 @@ public class TerrainChunk : MonoBehaviour {
 
         public int3 gridSize;
         public float voxelSize;
+        public bool forceLowPoly;
 
         public NativeArray<int> outCellTriangleCounts;
         public NativeArray<int> outCellVertexOffsets;
@@ -560,9 +563,14 @@ public class TerrainChunk : MonoBehaviour {
         }
 
         private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
-            float denom = d0 - d1;
-            float t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
-            t = math.clamp(t, 0f, 1f);
+            float t;
+            if (forceLowPoly) t = 0.5f;
+            else {
+                float denom = d0 - d1;
+                t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
+                t = math.clamp(t, 0f, 1f);
+            }
+
             return math.lerp(p0, p1, t);
         }
 
@@ -921,6 +929,7 @@ public class TerrainChunk : MonoBehaviour {
 
         public int3 gridSize;
         public float voxelSize;
+        public bool forceLowPoly;
 
         [NativeDisableContainerSafetyRestriction] public Mesh.MeshData meshData;
 
@@ -962,9 +971,14 @@ public class TerrainChunk : MonoBehaviour {
         }
 
         private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
-            float denom = d0 - d1;
-            float t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
-            t = math.clamp(t, 0f, 1f);
+            float t;
+            if (forceLowPoly) t = 0.5f;
+            else {
+                float denom = d0 - d1;
+                t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
+                t = math.clamp(t, 0f, 1f);
+            }
+
             return math.lerp(p0, p1, t);
         }
 

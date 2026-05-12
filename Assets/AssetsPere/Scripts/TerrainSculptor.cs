@@ -88,10 +88,6 @@ public static class TerrainSculptor {
             brushShape = shape,
             brushType = type,
             isVertical = isVertical,
-            deltaTime = dt,
-            lowPolyStepFactor = 3.5f,
-            noiseScale = 0.18f,
-            noiseAmplitude = 1.0f,
             isoLevel = 0f,
             hitMaterial = hitMaterial
         };
@@ -178,14 +174,8 @@ public static class TerrainSculptor {
         public BrushType brushType;
         public bool isVertical;
 
-        public float deltaTime;
-        public float lowPolyStepFactor;
-        public float noiseScale;
-        public float noiseAmplitude;
         public float isoLevel;
         public byte hitMaterial;
-
-        private float FixedStepAmount => math.max(0.0005f, deltaTime * lowPolyStepFactor);
 
         public void Execute() {
             int pointsX = gridSize.x + 1;
@@ -195,6 +185,10 @@ public static class TerrainSculptor {
             float injectRadius = radius * 0.9f;
             float coreRadius = math.max(voxelSize * 1.25f, radius * 0.22f);
 
+            bool isAdding = brushType == BrushType.SphereAdd;
+            bool isSubtracting = brushType == BrushType.SphereSubtract;
+            bool isSmoothing = !isAdding && !isSubtracting;
+
             for (int index = 0; index < Densities.Length; index++) {
                 int z = index / planeSize;
                 int rem = index - z * planeSize;
@@ -203,49 +197,62 @@ public static class TerrainSculptor {
 
                 if (x > gridSize.x || y > gridSize.y || z > gridSize.z) continue;
 
-                float3 localVoxelPos = new float3(x, y, z) * voxelSize;
-                float3 globalVoxelPos = chunkWorldPosition + localVoxelPos;
+                float3 voxelPos = chunkWorldPosition + new float3(x, y, z) * voxelSize;
+                float3 hitPoint = globalHitPoint;
+                float3 localPos = voxelPos - hitPoint;
 
-                bool affects = false;
-                float shapeFactor = 1f;
-
+                float brushSDF;
                 switch (brushShape) {
                     case BrushShape.Sphere:
-                        EvaluateSphere(globalVoxelPos, ref affects, ref shapeFactor);
+                        brushSDF = TerrainCSG.SDFSphere(localPos, radius);
                         break;
 
                     case BrushShape.Box:
-                        EvaluateBox(globalVoxelPos, ref affects, ref shapeFactor);
+                        brushSDF = TerrainCSG.SDFBox(localPos, new float3(radius, radius, radius));
                         break;
 
                     case BrushShape.VerticalPillar:
-                        EvaluateVerticalPillar(globalVoxelPos, ref affects, ref shapeFactor);
+                        brushSDF = TerrainCSG.SDFVerticalPillar(localPos.xz, radius);
                         break;
 
                     case BrushShape.NoiseFeature:
-                        EvaluateNoiseFeature(globalVoxelPos, ref affects, ref shapeFactor);
+                        float n = noise.cnoise(localPos.xz * 0.18f);
+                        brushSDF = TerrainCSG.SDFSphere(localPos, radius) + n;
+                        break;
+
+                    default:
+                        brushSDF = TerrainCSG.SDFSphere(localPos, radius);
                         break;
                 }
 
-                if (!affects) continue;
+                if (brushSDF > 0f) continue;
 
                 float oldDensity = sourceDensities[index];
-                bool wasAir = oldDensity > isoLevel;
+                float newDensity;
 
-                float newDensity = ComputeQuantizedDensity(oldDensity, globalVoxelPos, shapeFactor);
+                if (isAdding)
+                    newDensity = TerrainCSG.Union(oldDensity, brushSDF);
+                else if (isSubtracting)
+                    newDensity = TerrainCSG.Difference(oldDensity, brushSDF);
+                else if (isSmoothing)
+                    newDensity = TerrainCSG.SmoothUnion(oldDensity, brushSDF, math.max(0.0001f, strength));
+                else
+                    newDensity = oldDensity;
+
                 Densities[index] = newDensity;
 
+                bool wasAir = oldDensity > isoLevel;
                 bool isNowSolid = newDensity <= isoLevel;
-                if (brushType != BrushType.SphereAdd) continue;
+                if (!isAdding) continue;
                 if (!wasAir || !isNowSolid) continue;
                 if (hitMaterial == 0) continue;
 
-                float radialDist = math.distance(globalVoxelPos, globalHitPoint);
+                float radialDist = math.distance(voxelPos, hitPoint);
                 if (radialDist <= coreRadius)
                     Metadata[index] = hitMaterial;
             }
 
-            if (brushType != BrushType.SphereAdd || hitMaterial == 0) return;
+            if (!isAdding || hitMaterial == 0) return;
 
             for (int pass = 0; pass < 3; pass++) {
                 bool changed = false;
@@ -258,9 +265,8 @@ public static class TerrainSculptor {
 
                     if (x > gridSize.x || y > gridSize.y || z > gridSize.z) continue;
 
-                    float3 localVoxelPos = new float3(x, y, z) * voxelSize;
-                    float3 globalVoxelPos = chunkWorldPosition + localVoxelPos;
-                    float radialDist = math.distance(globalVoxelPos, globalHitPoint);
+                    float3 voxelPos = chunkWorldPosition + new float3(x, y, z) * voxelSize;
+                    float radialDist = math.distance(voxelPos, globalHitPoint);
                     if (radialDist > injectRadius) continue;
 
                     float oldDensity = sourceDensities[index];
@@ -308,89 +314,6 @@ public static class TerrainSculptor {
             if (i < 0 || i >= Densities.Length) return false;
             if (Densities[i] > isoLevel) return false;
             return Metadata[i] == hitMaterial;
-        }
-
-        // === EVALUACIÓN ESPACIAL ===
-        private void EvaluateSphere(float3 voxelPos, ref bool affects, ref float factor) {
-            float dist = math.distance(voxelPos, globalHitPoint);
-            if (dist > radius) return;
-
-            affects = true;
-            factor = math.saturate(1f - (dist / radius));
-        }
-
-        private void EvaluateBox(float3 voxelPos, ref bool affects, ref float factor) {
-            float3 d = math.abs(voxelPos - globalHitPoint);
-            if (d.x > radius || d.y > radius || d.z > radius) return;
-
-            affects = true;
-            factor = 1f;
-        }
-
-        private void EvaluateVerticalPillar(float3 voxelPos, ref bool affects, ref float factor) {
-            float2 xzDist = new float2(voxelPos.x - globalHitPoint.x, voxelPos.z - globalHitPoint.z);
-            float radial = math.length(xzDist);
-            if (radial > radius) return;
-
-            float lower = globalHitPoint.y;
-            float upper = globalHitPoint.y;
-
-            if (brushType == BrushType.SphereAdd)
-                upper = globalHitPoint.y + radius * 2f;
-            else if (brushType == BrushType.SphereSubtract)
-                lower = globalHitPoint.y - radius * 2f;
-            else {
-                lower = globalHitPoint.y - radius;
-                upper = globalHitPoint.y + radius;
-            }
-
-            if (voxelPos.y < lower || voxelPos.y > upper) return;
-
-            affects = true;
-            factor = math.saturate(1f - (radial / radius));
-        }
-
-        private void EvaluateNoiseFeature(float3 voxelPos, ref bool affects, ref float factor) {
-            float2 xz = new float2(voxelPos.x, voxelPos.z);
-            float2 hitXZ = new float2(globalHitPoint.x, globalHitPoint.z);
-            float radial = math.length(xz - hitXZ);
-            if (radial > radius) return;
-
-            float radialFactor = math.saturate(1f - (radial / radius));
-            float n = Unity.Mathematics.noise.cnoise(xz * noiseScale);
-            float noiseFactor = 1f + (n * noiseAmplitude);
-
-            affects = true;
-            factor = radialFactor * noiseFactor;
-        }
-
-        // === APLICACIÓN LOW POLY CUANTIZADA ===
-        private float ComputeQuantizedDensity(float current, float3 voxelPos, float shapeFactor) {
-            float step = FixedStepAmount * math.max(0.01f, math.abs(strength)) * math.max(0.01f, shapeFactor);
-
-            switch (brushType) {
-                case BrushType.SphereAdd: {
-                    float deltaDensity = -math.sign(strength == 0f ? 1f : strength) * step;
-                    return current + deltaDensity;
-                }
-                case BrushType.SphereSubtract: {
-                    float deltaDensity = math.sign(strength == 0f ? 1f : strength) * step;
-                    return current + deltaDensity;
-                }
-                case BrushType.Flatten: {
-                    float target = voxelPos.y - globalHitPoint.y;
-                    float dir = math.sign(target - current);
-                    float deltaDensity = dir * step;
-                    float next = current + deltaDensity;
-
-                    if ((dir > 0f && next > target) || (dir < 0f && next < target))
-                        next = target;
-
-                    return next;
-                }
-            }
-
-            return current;
         }
     }
 }
