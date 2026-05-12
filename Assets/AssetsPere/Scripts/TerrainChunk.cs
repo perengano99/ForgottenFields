@@ -1102,21 +1102,22 @@ public class TerrainChunk : MonoBehaviour {
                             float area2 = math.lengthsq(faceN);
 
                             float3 center = (a + b + c) * (1f / 3f);
-                            float3 gradN = SampleGradient(center);
+                            float3 gradNa = SampleGradient(a);
+                            float3 gradNb = SampleGradient(b);
+                            float3 gradNc = SampleGradient(c);
 
-                            if (area2 >= 1e-10f) faceN = math.normalize(faceN);
-                            else faceN = math.up();
+                            if (!math.all(math.isfinite(gradNa))) gradNa = faceN;
+                            if (!math.all(math.isfinite(gradNb))) gradNb = faceN;
+                            if (!math.all(math.isfinite(gradNc))) gradNc = faceN;
 
-                            if (!math.all(math.isfinite(gradN))) gradN = faceN;
-                            if (math.dot(gradN, faceN) < 0f) gradN = -gradN;
-
-                            float3 shadowN = math.normalize(math.lerp(faceN, gradN, 0.85f));
-                            if (!math.all(math.isfinite(shadowN))) shadowN = faceN;
+                            if (math.dot(gradNa, faceN) < 0f) gradNa = -gradNa;
+                            if (math.dot(gradNb, faceN) < 0f) gradNb = -gradNb;
+                            if (math.dot(gradNc, faceN) < 0f) gradNc = -gradNc;
 
                             int baseVertex = writeOffset + localTri * 3;
-                            WriteVertex(vertices, indices, baseVertex, a, shadowN, matID);
-                            WriteVertex(vertices, indices, baseVertex + 1, b, shadowN, matID);
-                            WriteVertex(vertices, indices, baseVertex + 2, c, shadowN, matID);
+                            WriteVertex(vertices, indices, baseVertex, a, math.normalize(gradNa), matID);
+                            WriteVertex(vertices, indices, baseVertex + 1, b, math.normalize(gradNb), matID);
+                            WriteVertex(vertices, indices, baseVertex + 2, c, math.normalize(gradNc), matID);
                             localTri++;
                         }
                     }
