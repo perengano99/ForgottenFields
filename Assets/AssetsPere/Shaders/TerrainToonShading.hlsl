@@ -14,39 +14,37 @@ float3 ToonTerrainLightingCore(
     float3 ShadowColor)
 {
     float3 N = normalize(SmoothWorldNormal);
+    float width = max(ShadowSmoothness, 0.0001);
+    float thMin = ShadowThreshold - width;
+    float thMax = ShadowThreshold + width;
 
     #ifdef SHADERGRAPH_PREVIEW
         float3 L = normalize(float3(0.35, 0.8, 0.25));
-        float ndl = saturate(dot(N, L));
-        float band = smoothstep(ShadowThreshold - ShadowSmoothness, ShadowThreshold + ShadowSmoothness, ndl);
-        return lerp(BaseColor * ShadowColor, BaseColor, band);
+        float ndl01 = saturate(dot(N, L) * 0.5 + 0.5);
+        float band = smoothstep(thMin, thMax, ndl01);
+        float3 ramp = lerp(ShadowColor, 1.0.xxx, band);
+        return BaseColor * ramp;
     #else
         // === MAIN LIGHT ===
         float4 shadowCoord = TransformWorldToShadowCoord(WorldPos);
         Light mainLight = GetMainLight(shadowCoord);
 
-        float attenuation = mainLight.shadowAttenuation * mainLight.distanceAttenuation;
-        float ndlMain = dot(N, normalize(mainLight.direction));
-        float mainBand = smoothstep(
-            ShadowThreshold - ShadowSmoothness,
-            ShadowThreshold + ShadowSmoothness,
-            (ndlMain * 0.5 + 0.5) * attenuation);
+        float attenuation = saturate(mainLight.shadowAttenuation * mainLight.distanceAttenuation);
+        float ndlMain01 = saturate(dot(N, normalize(mainLight.direction)) * 0.5 + 0.5);
+        float mainBand = smoothstep(thMin, thMax, ndlMain01 * attenuation);
 
-        float3 color = lerp(BaseColor * ShadowColor, BaseColor, mainBand) * mainLight.color;
+        float3 mainRamp = lerp(ShadowColor, 1.0.xxx, mainBand);
+        float3 color = BaseColor * mainRamp * mainLight.color;
 
         // === ADDITIONAL LIGHTS ===
         uint addCount = GetAdditionalLightsCount();
         for (uint i = 0u; i < addCount; i++) {
             Light addLight = GetAdditionalLight(i, WorldPos);
 
-            float ndlAdd = dot(N, normalize(addLight.direction));
+            float ndlAdd01 = saturate(dot(N, normalize(addLight.direction)) * 0.5 + 0.5);
             float addDistHard = step(0.001, addLight.distanceAttenuation);
             float addAtten = addDistHard * addLight.shadowAttenuation;
-
-            float addBand = smoothstep(
-                ShadowThreshold - ShadowSmoothness,
-                ShadowThreshold + ShadowSmoothness,
-                (ndlAdd * 0.5 + 0.5) * addAtten);
+            float addBand = smoothstep(thMin, thMax, ndlAdd01 * addAtten);
 
             color += BaseColor * addLight.color * addBand;
         }
