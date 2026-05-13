@@ -14,9 +14,10 @@ public struct Triangle {
     public float3 n0;
     public float3 n1;
     public float3 n2;
-    public float m0;
-    public float m1;
-    public float m2;
+    public float4 indices;
+    public float4 w0;
+    public float4 w1;
+    public float4 w2;
 }
 
 public enum BrushType {
@@ -772,9 +773,9 @@ public class TerrainChunk : MonoBehaviour {
                                 n0 = GetEdgeNormal(triIndex, x, y, z),
                                 n1 = GetEdgeNormal(t2, x, y, z),
                                 n2 = GetEdgeNormal(t1, x, y, z),
-                                m0 = matID,
-                                m1 = matID,
-                                m2 = matID
+                                w0 = new float4(1, 0, 0, 0),
+                                w1 = new float4(0, 1, 0, 0),
+                                w2 = new float4(0, 0, 1, 0)
                             };
                             _ = tri;
                         }
@@ -1252,6 +1253,8 @@ public class TerrainChunk : MonoBehaviour {
                         int writeOffset = cellVertexOffsets[cellIndex];
                         int localTri = 0;
 
+                        // Debug.Log($"cellIndex: {cellIndex}, triCount: {triCount}, writeOffset: {writeOffset}, cubeIndex: {cubeIndex}, edgeMask: {edgeMask}");
+
                         for (int i = 0; i < 16; i += 3) {
                             int t0 = triTable[triBase + i];
                             if (t0 == -1) break;
@@ -1279,9 +1282,10 @@ public class TerrainChunk : MonoBehaviour {
                                 n0 = gradNa,
                                 n1 = gradNb,
                                 n2 = gradNc,
-                                m0 = matID,
-                                m1 = matID,
-                                m2 = matID
+                                indices = new float4(-1, -1, -1, -1),
+                                w0 = new float4(1, 0, 0, 0),
+                                w1 = new float4(0, 1, 0, 0),
+                                w2 = new float4(0, 0, 1, 0)
                             };
 
                             int baseVertex = writeOffset + localTri * 3;
