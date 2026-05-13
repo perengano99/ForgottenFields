@@ -200,45 +200,28 @@ public static class TerrainSculptor {
                 if (x > gridSize.x || y > gridSize.y || z > gridSize.z) continue;
 
                 float3 voxelPos = chunkWorldPosition + new float3(x, y, z) * voxelSize;
-                float3 hitPoint = globalHitPoint;
-                float3 localPos = voxelPos - hitPoint;
+                float distance = isVertical
+                    ? math.distance(voxelPos.xz, globalHitPoint.xz)
+                    : math.distance(voxelPos, globalHitPoint);
 
-                float brushSDF;
-                switch (brushShape) {
-                    case BrushShape.Sphere:
-                        brushSDF = TerrainCSG.SDFSphere(localPos, radius);
-                        break;
+                if (distance > radius) continue;
 
-                    case BrushShape.Box:
-                        brushSDF = TerrainCSG.SDFBox(localPos, new float3(radius, radius, radius));
-                        break;
-
-                    case BrushShape.VerticalPillar:
-                        brushSDF = TerrainCSG.SDFVerticalPillar(localPos.xz, radius);
-                        break;
-
-                    case BrushShape.NoiseFeature:
-                        float n = noise.cnoise(localPos.xz * 0.18f);
-                        brushSDF = TerrainCSG.SDFSphere(localPos, radius) + n;
-                        break;
-
-                    default:
-                        brushSDF = TerrainCSG.SDFSphere(localPos, radius);
-                        break;
-                }
-
-                if (brushSDF > 0f) continue;
+                float falloff = math.smoothstep(radius, 0f, distance);
+                float delta = strength * falloff * fixedStepAmount;
 
                 float oldDensity = sourceDensities[index];
-                float newDensity = Densities[index];
+                float newDensity = oldDensity;
 
                 if (isAdding)
-                    newDensity = TerrainCSG.BrushUnion(oldDensity, brushSDF, strength * fixedStepAmount);
+                    newDensity -= delta;
                 else if (isSubtracting)
-                    newDensity = TerrainCSG.BrushDifference(oldDensity, brushSDF, strength * fixedStepAmount);
-                else if (isSmoothing)
-                    newDensity = TerrainCSG.SmoothUnion(oldDensity, brushSDF, math.max(0.0001f, strength));
+                    newDensity += delta;
+                else if (isSmoothing) {
+                    float neighborAvg = GetNeighborAverage(x, y, z, pointsX, planeSize, oldDensity);
+                    newDensity = math.lerp(oldDensity, neighborAvg, math.saturate(delta));
+                }
 
+                newDensity = math.clamp(newDensity, -1f, 1f);
                 Densities[index] = newDensity;
 
                 bool wasAir = oldDensity > isoLevel;
@@ -247,8 +230,7 @@ public static class TerrainSculptor {
                 if (!wasAir || !isNowSolid) continue;
                 if (hitMaterial == 0) continue;
 
-                float radialDist = math.distance(voxelPos, hitPoint);
-                if (radialDist <= coreRadius)
+                if (distance <= coreRadius)
                     Metadata[index] = hitMaterial;
             }
 
@@ -283,6 +265,31 @@ public static class TerrainSculptor {
 
                 if (!changed) break;
             }
+        }
+
+        private float GetNeighborAverage(int x, int y, int z, int pointsX, int planeSize, float fallback) {
+            float sum = 0f;
+            int count = 0;
+
+            TryAccumulate(x + 1, y, z, pointsX, planeSize, ref sum, ref count);
+            TryAccumulate(x - 1, y, z, pointsX, planeSize, ref sum, ref count);
+            TryAccumulate(x, y + 1, z, pointsX, planeSize, ref sum, ref count);
+            TryAccumulate(x, y - 1, z, pointsX, planeSize, ref sum, ref count);
+            TryAccumulate(x, y, z + 1, pointsX, planeSize, ref sum, ref count);
+            TryAccumulate(x, y, z - 1, pointsX, planeSize, ref sum, ref count);
+
+            if (count == 0) return fallback;
+            return sum / count;
+        }
+
+        private void TryAccumulate(int x, int y, int z, int pointsX, int planeSize, ref float sum, ref int count) {
+            if (x < 0 || y < 0 || z < 0 || x > gridSize.x || y > gridSize.y || z > gridSize.z) return;
+
+            int i = x + y * pointsX + z * planeSize;
+            if (i < 0 || i >= sourceDensities.Length) return;
+
+            sum += sourceDensities[i];
+            count++;
         }
 
         private bool HasNeighborHitMat(int x, int y, int z, int pointsX, int planeSize) {

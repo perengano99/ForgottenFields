@@ -20,7 +20,7 @@ public static class MarchingCubesTables {
         0xf00, 0xe09, 0xd03, 0xc0a, 0xb06, 0xa0f, 0x905, 0x80c, 0x70c, 0x605, 0x50f, 0x406, 0x30a, 0x203, 0x109, 0x000
     };
 
-    public static readonly int[,] TriTable = new int[256, 16] {
+    private static readonly int[,] TriTable = new int[,] {
         {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
         {0, 8, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
         {0, 1, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
@@ -278,6 +278,19 @@ public static class MarchingCubesTables {
         {0, 3, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
         {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}
     };
+
+    public static readonly int[] TriTable1D = new int[4096];
+
+    static MarchingCubesTables() {
+        for (int i = 0; i < TriTable1D.Length; i++)
+            TriTable1D[i] = -1;
+
+        int rows = TriTable.GetLength(0);
+        int cols = TriTable.GetLength(1);
+        for (int row = 0; row < rows; row++)
+            for (int col = 0; col < cols; col++)
+                TriTable1D[row * 16 + col] = TriTable[row, col];
+    }
 
     public static readonly Vector3[] CornerOffsets = new Vector3[8] {
         new Vector3(0f, 0f, 0f),

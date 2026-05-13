@@ -11,6 +11,9 @@ public struct Triangle {
     public float3 v0;
     public float3 v1;
     public float3 v2;
+    public float3 n0;
+    public float3 n1;
+    public float3 n2;
     public float m0;
     public float m1;
     public float m2;
@@ -255,17 +258,13 @@ public class TerrainChunk : MonoBehaviour {
         islandCount = new NativeReference<int>(Allocator.Persistent);
 
         nativeEdgeTable = new NativeArray<int>(256, Allocator.Persistent);
-        nativeTriTable = new NativeArray<int>(256 * 16, Allocator.Persistent);
+        nativeTriTable = new NativeArray<int>(4096, Allocator.Persistent);
         cellTriangleCounts = new NativeArray<int>(cellCount, Allocator.Persistent);
         cellVertexOffsets = new NativeArray<int>(cellCount, Allocator.Persistent);
         totalTriangleCount = new NativeReference<int>(Allocator.Persistent);
 
         for (int i = 0; i < 256; i++)
             nativeEdgeTable[i] = MarchingCubesTables.EdgeTable[i];
-
-        for (int row = 0; row < 256; row++)
-            for (int col = 0; col < 16; col++)
-                nativeTriTable[row * 16 + col] = MarchingCubesTables.TriTable[row, col];
     }
 
     private void OnEnable() {
@@ -278,6 +277,7 @@ public class TerrainChunk : MonoBehaviour {
         }
 
         InitializeData();
+        nativeTriTable.CopyFrom(MarchingCubesTables.TriTable1D);
 
         validatedGridSizeX = gridSizeX;
         validatedGridSizeY = gridSizeY;
@@ -489,6 +489,11 @@ public class TerrainChunk : MonoBehaviour {
         };
         meshJob.Schedule().Complete();
 
+        NativeArray<TerrainVertex> vertexData = meshData.GetVertexData<TerrainVertex>();
+        NativeArray<Vector3> normals = new NativeArray<Vector3>(vertexCount, Allocator.Temp);
+        for (int i = 0; i < vertexCount; i++)
+            normals[i] = vertexData[i].normal;
+
         meshData.subMeshCount = 1;
         meshData.SetSubMesh(0, new SubMeshDescriptor(0, indexCount) {
             vertexCount = vertexCount,
@@ -499,6 +504,8 @@ public class TerrainChunk : MonoBehaviour {
 
         chunkMesh.Clear(false);
         Mesh.ApplyAndDisposeWritableMeshData(meshDataArray, chunkMesh, MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
+        chunkMesh.SetNormals(normals, 0, normals.Length);
+        normals.Dispose();
         chunkMesh.bounds = new Bounds(
             new Vector3(gridSizeX, gridSizeY, gridSizeZ) * (voxelSize * 0.5f),
             new Vector3(gridSizeX, gridSizeY, gridSizeZ) * voxelSize);
@@ -574,10 +581,96 @@ public class TerrainChunk : MonoBehaviour {
         }
 
         private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
-            float denom = d0 - d1;
-            float t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
-            t = math.clamp(t, 0f, 1f);
+            float t = math.saturate(d0 / (d0 - d1));
             return math.lerp(p0, p1, t);
+        }
+
+        private int DensityIndex(int x, int y, int z) {
+            int pointsX = gridSize.x + 1;
+            int pointsY = gridSize.y + 1;
+            return x + y * pointsX + z * pointsX * pointsY;
+        }
+
+        private float3 CalculateNormal(int x, int y, int z) {
+            x = math.clamp(x, 0, gridSize.x);
+            y = math.clamp(y, 0, gridSize.y);
+            z = math.clamp(z, 0, gridSize.z);
+
+            int xm = math.max(x - 1, 0);
+            int xp = math.min(x + 1, gridSize.x);
+            int ym = math.max(y - 1, 0);
+            int yp = math.min(y + 1, gridSize.y);
+            int zm = math.max(z - 1, 0);
+            int zp = math.min(z + 1, gridSize.z);
+
+            float nx = densities[DensityIndex(xm, y, z)] - densities[DensityIndex(xp, y, z)];
+            float ny = densities[DensityIndex(x, ym, z)] - densities[DensityIndex(x, yp, z)];
+            float nz = densities[DensityIndex(x, y, zm)] - densities[DensityIndex(x, y, zp)];
+
+            float3 n = math.normalize(new float3(nx, ny, nz));
+            if (!math.all(math.isfinite(n))) return math.up();
+            return n;
+        }
+
+        private static int3 CornerOffset(int corner) {
+            switch (corner) {
+                case 0: return new int3(0, 0, 0);
+                case 1: return new int3(1, 0, 0);
+                case 2: return new int3(1, 1, 0);
+                case 3: return new int3(0, 1, 0);
+                case 4: return new int3(0, 0, 1);
+                case 5: return new int3(1, 0, 1);
+                case 6: return new int3(1, 1, 1);
+                case 7: return new int3(0, 1, 1);
+                default: return int3.zero;
+            }
+        }
+
+        private static int EdgeCornerA(int edge) {
+            switch (edge) {
+                case 0: return 0;
+                case 1: return 1;
+                case 2: return 2;
+                case 3: return 3;
+                case 4: return 4;
+                case 5: return 5;
+                case 6: return 6;
+                case 7: return 7;
+                case 8: return 0;
+                case 9: return 1;
+                case 10: return 2;
+                case 11: return 3;
+                default: return 0;
+            }
+        }
+
+        private static int EdgeCornerB(int edge) {
+            switch (edge) {
+                case 0: return 1;
+                case 1: return 2;
+                case 2: return 3;
+                case 3: return 0;
+                case 4: return 5;
+                case 5: return 6;
+                case 6: return 7;
+                case 7: return 4;
+                case 8: return 4;
+                case 9: return 5;
+                case 10: return 6;
+                case 11: return 7;
+                default: return 0;
+            }
+        }
+
+        private float3 GetEdgeNormal(int edge, int x, int y, int z) {
+            int3 aOff = CornerOffset(EdgeCornerA(edge));
+            int3 bOff = CornerOffset(EdgeCornerB(edge));
+
+            float3 na = CalculateNormal(x + aOff.x, y + aOff.y, z + aOff.z);
+            float3 nb = CalculateNormal(x + bOff.x, y + bOff.y, z + bOff.z);
+            float3 n = math.normalize(na + nb);
+            if (!math.all(math.isfinite(n))) return math.up();
+            return n;
         }
 
         public void Execute() {
@@ -665,10 +758,25 @@ public class TerrainChunk : MonoBehaviour {
                         if ((edgeMask & 2048) != 0) ev[11] = InterpolateIso(p010, p011, d010, d011);
 
                         // === ENSAMBLAJE DE TRIÁNGULOS ===
-                        int triBase = cubeIndex * 16;
                         for (int i = 0; i < 16; i += 3) {
-                            int t0 = triTable[triBase + i];
-                            if (t0 == -1) break;
+                            int triIndex = triTable[cubeIndex * 16 + i];
+                            if (triIndex == -1) break;
+
+                            int t1 = triTable[cubeIndex * 16 + i + 1];
+                            int t2 = triTable[cubeIndex * 16 + i + 2];
+
+                            Triangle tri = new Triangle {
+                                v0 = ev[triIndex],
+                                v1 = ev[t2],
+                                v2 = ev[t1],
+                                n0 = GetEdgeNormal(triIndex, x, y, z),
+                                n1 = GetEdgeNormal(t2, x, y, z),
+                                n2 = GetEdgeNormal(t1, x, y, z),
+                                m0 = matID,
+                                m1 = matID,
+                                m2 = matID
+                            };
+                            _ = tri;
                         }
                     }
                 }
@@ -939,29 +1047,90 @@ public class TerrainChunk : MonoBehaviour {
 
         [NativeDisableContainerSafetyRestriction] public Mesh.MeshData meshData;
 
-        private float SampleDensityClamped(int x, int y, int z) {
+        private int DensityIndex(int x, int y, int z) {
+            int pointsX = gridSize.x + 1;
+            int pointsY = gridSize.y + 1;
+            return x + y * pointsX + z * pointsX * pointsY;
+        }
+
+        private float3 CalculateNormal(int x, int y, int z) {
             x = math.clamp(x, 0, gridSize.x);
             y = math.clamp(y, 0, gridSize.y);
             z = math.clamp(z, 0, gridSize.z);
 
-            int pointsX = gridSize.x + 1;
-            int pointsY = gridSize.y + 1;
-            int index = x + y * pointsX + z * pointsX * pointsY;
-            return densities[index];
+            int xm = math.max(x - 1, 0);
+            int xp = math.min(x + 1, gridSize.x);
+            int ym = math.max(y - 1, 0);
+            int yp = math.min(y + 1, gridSize.y);
+            int zm = math.max(z - 1, 0);
+            int zp = math.min(z + 1, gridSize.z);
+
+            float nx = densities[DensityIndex(xm, y, z)] - densities[DensityIndex(xp, y, z)];
+            float ny = densities[DensityIndex(x, ym, z)] - densities[DensityIndex(x, yp, z)];
+            float nz = densities[DensityIndex(x, y, zm)] - densities[DensityIndex(x, y, zp)];
+
+            float3 n = math.normalize(new float3(nx, ny, nz));
+            return n;
         }
 
-        private float3 SampleGradient(float3 pos) {
-            float inv = 1f / voxelSize;
-            int x = (int)math.round(pos.x * inv);
-            int y = (int)math.round(pos.y * inv);
-            int z = (int)math.round(pos.z * inv);
+        private static int3 CornerOffset(int corner) {
+            switch (corner) {
+                case 0: return new int3(0, 0, 0);
+                case 1: return new int3(1, 0, 0);
+                case 2: return new int3(1, 1, 0);
+                case 3: return new int3(0, 1, 0);
+                case 4: return new int3(0, 0, 1);
+                case 5: return new int3(1, 0, 1);
+                case 6: return new int3(1, 1, 1);
+                case 7: return new int3(0, 1, 1);
+                default: return int3.zero;
+            }
+        }
 
-            float dx = SampleDensityClamped(x + 1, y, z) - SampleDensityClamped(x - 1, y, z);
-            float dy = SampleDensityClamped(x, y + 1, z) - SampleDensityClamped(x, y - 1, z);
-            float dz = SampleDensityClamped(x, y, z + 1) - SampleDensityClamped(x, y, z - 1);
+        private static int EdgeCornerA(int edge) {
+            switch (edge) {
+                case 0: return 0;
+                case 1: return 1;
+                case 2: return 2;
+                case 3: return 3;
+                case 4: return 4;
+                case 5: return 5;
+                case 6: return 6;
+                case 7: return 7;
+                case 8: return 0;
+                case 9: return 1;
+                case 10: return 2;
+                case 11: return 3;
+                default: return 0;
+            }
+        }
 
-            float3 normal = math.normalize(new float3(dx, dy, dz));
-            return math.any(!math.isfinite(normal)) ? math.up() : normal;
+        private static int EdgeCornerB(int edge) {
+            switch (edge) {
+                case 0: return 1;
+                case 1: return 2;
+                case 2: return 3;
+                case 3: return 0;
+                case 4: return 5;
+                case 5: return 6;
+                case 6: return 7;
+                case 7: return 4;
+                case 8: return 4;
+                case 9: return 5;
+                case 10: return 6;
+                case 11: return 7;
+                default: return 0;
+            }
+        }
+
+        private float3 GetEdgeNormal(int edge, int x, int y, int z) {
+            int3 aOff = CornerOffset(EdgeCornerA(edge));
+            int3 bOff = CornerOffset(EdgeCornerB(edge));
+
+            float3 na = CalculateNormal(x + aOff.x, y + aOff.y, z + aOff.z);
+            float3 nb = CalculateNormal(x + bOff.x, y + bOff.y, z + bOff.z);
+            float3 n = math.normalize(na + nb);
+            return n;
         }
 
         private void TryPickCornerMaterial(int cornerIndex, float cornerDensity, ref float bestSolidDensity, ref byte bestMatID) {
@@ -977,9 +1146,7 @@ public class TerrainChunk : MonoBehaviour {
         }
 
         private static float3 InterpolateIso(float3 p0, float3 p1, float d0, float d1) {
-            float denom = d0 - d1;
-            float t = math.select(0.5f, d0 / denom, math.abs(denom) > 1e-8f);
-            t = math.clamp(t, 0f, 1f);
+            float t = math.saturate(d0 / (d0 - d1));
             return math.lerp(p0, p1, t);
         }
 
@@ -1096,45 +1263,36 @@ public class TerrainChunk : MonoBehaviour {
                             float3 b = ev[t2];
                             float3 c = ev[t1];
 
-                            float3 e1 = b - a;
-                            float3 e2 = c - a;
-                            float3 faceN = math.cross(e1, e2);
-                            float area2 = math.lengthsq(faceN);
-
-                            float3 center = (a + b + c) * (1f / 3f);
-                            float3 gradNa = SampleGradient(a);
-                            float3 gradNb = SampleGradient(b);
-                            float3 gradNc = SampleGradient(c);
-
-                            if (!math.all(math.isfinite(gradNa))) gradNa = faceN;
-                            if (!math.all(math.isfinite(gradNb))) gradNb = faceN;
-                            if (!math.all(math.isfinite(gradNc))) gradNc = faceN;
+                            float3 faceN = math.cross(b - a, c - a);
+                            float3 gradNa = GetEdgeNormal(t0, x, y, z);
+                            float3 gradNb = GetEdgeNormal(t2, x, y, z);
+                            float3 gradNc = GetEdgeNormal(t1, x, y, z);
 
                             if (math.dot(gradNa, faceN) < 0f) gradNa = -gradNa;
                             if (math.dot(gradNb, faceN) < 0f) gradNb = -gradNb;
                             if (math.dot(gradNc, faceN) < 0f) gradNc = -gradNc;
 
+                            Triangle tri = new Triangle {
+                                v0 = a,
+                                v1 = b,
+                                v2 = c,
+                                n0 = gradNa,
+                                n1 = gradNb,
+                                n2 = gradNc,
+                                m0 = matID,
+                                m1 = matID,
+                                m2 = matID
+                            };
+
                             int baseVertex = writeOffset + localTri * 3;
-                            WriteVertex(vertices, indices, baseVertex, a, math.normalize(gradNa), matID);
-                            WriteVertex(vertices, indices, baseVertex + 1, b, math.normalize(gradNb), matID);
-                            WriteVertex(vertices, indices, baseVertex + 2, c, math.normalize(gradNc), matID);
+                            WriteVertex(vertices, indices, baseVertex, tri.v0, tri.n0, matID);
+                            WriteVertex(vertices, indices, baseVertex + 1, tri.v1, tri.n1, matID);
+                            WriteVertex(vertices, indices, baseVertex + 2, tri.v2, tri.n2, matID);
                             localTri++;
                         }
                     }
                 }
             }
-        }
-    }
-
-    private void TryPickCornerMaterial(int cornerIndex, float cornerDensity, ref float bestSolidDensity, ref byte bestMatID) {
-        if (cornerDensity > 0f) return;
-
-        byte candidate = metadata[cornerIndex];
-        if (candidate == 0) return;
-
-        if (cornerDensity < bestSolidDensity) {
-            bestSolidDensity = cornerDensity;
-            bestMatID = candidate;
         }
     }
 }
