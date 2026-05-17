@@ -1,0 +1,37 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: da43506867991e04db992ff4486efef7, type: 3}
+  m_Name: TerrainMaterialLibrary
+  m_EditorClassIdentifier: Assembly-CSharp::FF.Terrain.TerrainMaterialManager
+  materials:
+  - materialID: 0
+    materialName: Empty
+    albedo: {fileID: 2800000, guid: fd93d694ce7293d4fa2e45af74957fba, type: 3}
+    normal: {fileID: 0}
+    roughness: 0
+    metallic: 0
+  - materialID: 1
+    materialName: Grass
+    albedo: {fileID: 2800000, guid: c2c80ca6c55fa4f4097803f55a2149dc, type: 3}
+    normal: {fileID: 0}
+    roughness: 0
+    metallic: 0
+  - materialID: 2
+    materialName: Dirt
+    albedo: {fileID: 2800000, guid: e20a912788cfc5a45aeb4835c506fac9, type: 3}
+    normal: {fileID: 0}
+    roughness: 0
+    metallic: 0
+  textureResolution: 32
+  targetMaterial: {fileID: 2100000, guid: fea0e07fe03030f49b3675d0da82f0cc, type: 2}
+  albedoProp: _Materials
+  normalProp: _Normals
