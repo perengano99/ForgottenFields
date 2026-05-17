@@ -52,14 +52,14 @@ namespace FF.Terrain {
 
         public static readonly int[] BaseTriangulation =
         {
-            0, 1, 2,
-            0, 2, 3
+            0, 2, 1,
+            0, 3, 2
         };
 
         public static readonly int[] FlippedTriangulation =
         {
-            0, 2, 1,
-            0, 3, 2
+            0, 1, 2,
+            0, 2, 3
         };
     }
 }

@@ -27,10 +27,13 @@ namespace FF.Terrain {
     public struct GenerateQuadsJob : IJobParallelFor {
         [ReadOnly] public NativeArray<VoxelData> voxels;
         [ReadOnly] public NativeArray<int> vertexMap;
+        public int3 vertexGridSize;
         public int3 logicalChunkSize;
-        public NativeList<int>.ParallelWriter indices;
+        public NativeStream.Writer indexStream;
 
         public void Execute(int index) {
+            indexStream.BeginForEachIndex(index);
+
             int3 p = ToCoord(index, logicalChunkSize);
 
             for (int axis = 0; axis < 3; axis++) {
@@ -52,7 +55,8 @@ namespace FF.Terrain {
                         break;
                     }
 
-                    int mapIndex = ToIndex(c, logicalChunkSize);
+                    int3 vc = c + 1;
+                    int mapIndex = ToIndex(vc, vertexGridSize);
                     int mappedVertex = vertexMap[mapIndex];
                     if (mappedVertex == -1) {
                         valid = false;
@@ -66,8 +70,10 @@ namespace FF.Terrain {
 
                 int[] triangulation = d0 > 0f ? DCTables.BaseTriangulation : DCTables.FlippedTriangulation;
                 for (int t = 0; t < 6; t++)
-                    indices.AddNoResize(quadVertexIndices[triangulation[t]]);
+                    indexStream.Write(quadVertexIndices[triangulation[t]]);
             }
+
+            indexStream.EndForEachIndex();
         }
 
         float SampleDensity(int3 logicalSample) {
@@ -88,7 +94,7 @@ namespace FF.Terrain {
         }
 
         static bool InRange(int3 p, int3 size) {
-            return p.x >= 0 && p.y >= 0 && p.z >= 0 && p.x < size.x && p.y < size.y && p.z < size.z;
+            return p.x >= -1 && p.y >= -1 && p.z >= -1 && p.x < size.x && p.y < size.y && p.z < size.z;
         }
     }
 
@@ -109,7 +115,7 @@ namespace FF.Terrain {
 
             int3 worldPos = (chunkCoord * logicalSize) + localPhysicalPos - padding;
 
-            float density = 16f - worldPos.y;
+            float density = 16.01f - worldPos.y;
             uint material = (uint)(density > 0f ? 1 : 0);
 
             voxels[index] = new VoxelData {

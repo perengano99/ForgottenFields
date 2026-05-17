@@ -33,18 +33,21 @@ namespace FF.Terrain {
 
         public void UpdateMesh() {
             int logicalTotal = logicalSize * logicalSize * logicalSize;
+            int vertexGridSize = logicalSize + 1;
+            int vertexTotal = vertexGridSize * vertexGridSize * vertexGridSize;
 
-            NativeArray<Vertex> denseVertices = new NativeArray<Vertex>(logicalTotal, Allocator.TempJob);
-            NativeList<Vertex> compactedVertices = new NativeList<Vertex>(logicalTotal / 4, Allocator.TempJob);
-            NativeArray<int> vertexMap = new NativeArray<int>(logicalTotal, Allocator.TempJob);
+            NativeArray<Vertex> denseVertices = new NativeArray<Vertex>(vertexTotal, Allocator.TempJob);
+            NativeList<Vertex> compactedVertices = new NativeList<Vertex>(vertexTotal / 4, Allocator.TempJob);
+            NativeArray<int> vertexMap = new NativeArray<int>(vertexTotal, Allocator.TempJob);
+            NativeStream indexStream = new NativeStream(logicalTotal, Allocator.TempJob);
             NativeList<int> indices = new NativeList<int>(logicalTotal * 3, Allocator.TempJob);
 
             GenerateVerticesJob generateVerticesJob = new GenerateVerticesJob {
                 voxels = voxels,
-                logicalChunkSize = new int3(logicalSize, logicalSize, logicalSize),
+                vertexGridSize = new int3(vertexGridSize, vertexGridSize, vertexGridSize),
                 generatedVertices = denseVertices
             };
-            var generateHandle = generateVerticesJob.Schedule(logicalTotal, 64);
+            var generateHandle = generateVerticesJob.Schedule(vertexTotal, 64);
 
             CompactVerticesJob compactVerticesJob = new CompactVerticesJob {
                 denseVertices = denseVertices,
@@ -56,11 +59,20 @@ namespace FF.Terrain {
             GenerateQuadsJob generateQuadsJob = new GenerateQuadsJob {
                 voxels = voxels,
                 vertexMap = vertexMap,
+                vertexGridSize = new int3(vertexGridSize, vertexGridSize, vertexGridSize),
                 logicalChunkSize = new int3(logicalSize, logicalSize, logicalSize),
-                indices = indices.AsParallelWriter()
+                indexStream = indexStream.AsWriter()
             };
             var quadsHandle = generateQuadsJob.Schedule(logicalTotal, 64, compactHandle);
             quadsHandle.Complete();
+
+            NativeStream.Reader streamReader = indexStream.AsReader();
+            for (int i = 0; i < logicalTotal; i++) {
+                int count = streamReader.BeginForEachIndex(i);
+                for (int j = 0; j < count; j++)
+                    indices.Add(streamReader.Read<int>());
+                streamReader.EndForEachIndex();
+            }
 
             VertexAttributeDescriptor[] attributes = new VertexAttributeDescriptor[]
             {
@@ -82,6 +94,7 @@ namespace FF.Terrain {
             denseVertices.Dispose();
             compactedVertices.Dispose();
             vertexMap.Dispose();
+            indexStream.Dispose();
             indices.Dispose();
         }
 

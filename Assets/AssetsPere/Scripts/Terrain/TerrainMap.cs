@@ -8,6 +8,12 @@ namespace FF.Terrain {
         public int3 gridSize = new int3(3, 1, 3); // Temporal, idealmente sera dinamico.
 
         void Awake() {
+            if (materialManager == null) {
+                Debug.LogError("[TerrainMap] No material manager assigned.");
+                return;
+            }
+            materialManager.SyncMaterial();
+
             GameObject terrainMesh = new GameObject("TerrainMesh");
             terrainMesh.transform.SetParent(transform, false);
 

@@ -8,43 +8,46 @@ namespace FF.Terrain {
     [BurstCompile(CompileSynchronously = true)]
     public struct GenerateVerticesJob : IJobParallelFor {
         [ReadOnly] public NativeArray<VoxelData> voxels;
-        public int3 logicalChunkSize;
+        public int3 vertexGridSize;
         public NativeArray<Vertex> generatedVertices;
 
         public void Execute(int index) {
-            int3 logicalPos = ToCoord(index, logicalChunkSize);
-            int3 physicalSize = logicalChunkSize + 2;
-            int3 cellMin = logicalPos + 1;
+            int3 gridPos = ToCoord(index, vertexGridSize);
+            int3 physicalSize = vertexGridSize + 1;
+            int3 cellMin = gridPos;
+            float3 localCellPos = gridPos - 1;
 
-            float3 sumPos = 0f;
-            float3 sumNrm = 0f;
+            float3 sumPos = float3.zero;
+            float3 sumNrm = float3.zero;
             int hitCount = 0;
             uint material = 0;
 
-            for (int edgeIndex = 0; edgeIndex < DCTables.EdgeVertices.Length; edgeIndex++) {
-                int2 edge = DCTables.EdgeVertices[edgeIndex];
-                int3 c0 = cellMin + DCTables.VoxelVertices[edge.x];
-                int3 c1 = cellMin + DCTables.VoxelVertices[edge.y];
+            for (int i = 0; i < 12; i++) {
+                int2 edge = DCTables.EdgeVertices[i];
+                int3 local0 = DCTables.VoxelVertices[edge.x];
+                int3 local1 = DCTables.VoxelVertices[edge.y];
 
-                VoxelData v0 = voxels[ToIndex(c0, physicalSize)];
-                VoxelData v1 = voxels[ToIndex(c1, physicalSize)];
+                int3 p0 = cellMin + local0;
+                int3 p1 = cellMin + local1;
 
+                VoxelData v0 = voxels[ToIndex(p0, physicalSize)];
+                VoxelData v1 = voxels[ToIndex(p1, physicalSize)];
                 float d0 = v0.density;
                 float d1 = v1.density;
-                bool crosses = (d0 < 0f && d1 > 0f) || (d0 > 0f && d1 < 0f);
+
+                bool crosses = (d0 > 0f && d1 < 0f) || (d0 < 0f && d1 > 0f);
                 if (!crosses) continue;
 
                 float t = d0 / (d0 - d1);
-                float3 p0 = DCTables.VoxelVertices[edge.x];
-                float3 p1 = DCTables.VoxelVertices[edge.y];
-                float3 cutPos = math.lerp(p0, p1, t);
+                float3 hitPos = math.lerp(localCellPos + local0, localCellPos + local1, t);
+                sumPos += hitPos;
 
-                float3 n0 = CalcNormal(c0, voxels, physicalSize);
-                float3 n1 = CalcNormal(c1, voxels, physicalSize);
-                float3 cutNrm = math.normalizesafe(math.lerp(n0, n1, t));
+                int3 sp = d0 > 0f ? p0 : p1;
+                float nx = SampleDensity(sp + new int3(-1, 0, 0), voxels, physicalSize) - SampleDensity(sp + new int3(1, 0, 0), voxels, physicalSize);
+                float ny = SampleDensity(sp + new int3(0, -1, 0), voxels, physicalSize) - SampleDensity(sp + new int3(0, 1, 0), voxels, physicalSize);
+                float nz = SampleDensity(sp + new int3(0, 0, -1), voxels, physicalSize) - SampleDensity(sp + new int3(0, 0, 1), voxels, physicalSize);
 
-                sumPos += cutPos;
-                sumNrm += cutNrm;
+                sumNrm += math.normalizesafe(new float3(nx, ny, nz));
                 hitCount++;
 
                 if (material == 0)
@@ -53,16 +56,11 @@ namespace FF.Terrain {
             }
 
             if (hitCount == 0) {
-                generatedVertices[index] = new Vertex {
-                    position = Vector3.zero,
-                    normal = Vector3.zero,
-                    material = 0
-                };
+                generatedVertices[index] = new Vertex { material = 0 };
                 return;
             }
 
-            float invCount = 1f / hitCount;
-            float3 finalPos = sumPos * invCount;
+            float3 finalPos = sumPos / hitCount;
             float3 finalNrm = math.normalizesafe(sumNrm);
 
             generatedVertices[index] = new Vertex {
@@ -70,18 +68,6 @@ namespace FF.Terrain {
                 normal = new Vector3(finalNrm.x, finalNrm.y, finalNrm.z),
                 material = material
             };
-        }
-
-        static float3 CalcNormal(int3 p, NativeArray<VoxelData> data, int3 size) {
-            float dx = SampleDensity(p + new int3(1, 0, 0), data, size) - SampleDensity(p + new int3(-1, 0, 0), data, size);
-            float dy = SampleDensity(p + new int3(0, 1, 0), data, size) - SampleDensity(p + new int3(0, -1, 0), data, size);
-            float dz = SampleDensity(p + new int3(0, 0, 1), data, size) - SampleDensity(p + new int3(0, 0, -1), data, size);
-            return math.normalizesafe(new float3(dx, dy, dz));
-        }
-
-        static float SampleDensity(int3 p, NativeArray<VoxelData> data, int3 size) {
-            int3 clamped = math.clamp(p, 0, size - 1);
-            return data[ToIndex(clamped, size)].density;
         }
 
         static int ToIndex(int3 p, int3 size) {
@@ -93,6 +79,11 @@ namespace FF.Terrain {
             int y = (index / size.x) % size.y;
             int z = index / (size.x * size.y);
             return new int3(x, y, z);
+        }
+
+        static float SampleDensity(int3 p, NativeArray<VoxelData> voxels, int3 size) {
+            int3 clamped = math.clamp(p, 0, size - 1);
+            return voxels[ToIndex(clamped, size)].density;
         }
     }
 }

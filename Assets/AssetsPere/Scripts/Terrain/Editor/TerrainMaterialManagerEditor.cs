@@ -16,23 +16,18 @@ namespace FF.Terrain.Editor {
         private int selectedMaterialIndex = -1;
 
         private MaterialEditor materialEditor;
-        private bool forceRebuildPreview = false;
+        private Material previewMaterial;
 
         private void OnEnable() {
             var manager = (TerrainMaterialManager)target;
             if (foldoutStates == null || foldoutStates.Length != manager.materials.Count)
                 foldoutStates = new bool[manager.materials.Count];
 
-            UnityEditor.Editor tempEditor = null;
-            CreateCachedEditor(manager.targetMaterial, typeof(MaterialEditor), ref tempEditor);
-            materialEditor = (MaterialEditor)tempEditor;
+            UpdatePreviewEditor(manager);
         }
 
         private void OnDisable() {
-            if (materialEditor != null) {
-                DestroyImmediate(materialEditor);
-                materialEditor = null;
-            }
+            CleanupPreview();
         }
 
         public override void OnInspectorGUI() {
@@ -53,6 +48,7 @@ namespace FF.Terrain.Editor {
                 Undo.RecordObject(manager, "Change Target Material");
                 manager.targetMaterial = targetMaterial;
                 EditorUtility.SetDirty(manager);
+                UpdatePreviewEditor(manager);
             }
 
             EditorGUILayout.Space(10f);
@@ -64,6 +60,7 @@ namespace FF.Terrain.Editor {
                     "Assign a material that uses the terrain shader to continue.",
                     MessageType.Warning
                 );
+                CleanupPreview(); // Limpiar si se quita el material
                 return;
             }
 
@@ -106,36 +103,36 @@ namespace FF.Terrain.Editor {
             // === BOTON APPLY ===
             GUI.backgroundColor = new Color(0.3f, 0.7f, 0.3f);
             if (GUILayout.Button("Apply", GUILayout.Height(40f))) {
-                if (ValidateMaterials(manager))
+                if (ValidateMaterials(manager)) {
                     manager.RefreshAll();
+                    if (previewMaterial != null)
+                        previewMaterial.CopyPropertiesFromMaterial(manager.targetMaterial);
+                }
             }
             GUI.backgroundColor = Color.white;
 
             EditorGUILayout.Space(20f);
-
-            if (forceRebuildPreview) {
-                if (materialEditor != null) {
-                    DestroyImmediate(materialEditor);
-                    materialEditor = null;
-                }
-                forceRebuildPreview = false;
-            }
-
-            if (targetMaterial != null) {
-                if (materialEditor == null || materialEditor.target != targetMaterial) {
-                    if (materialEditor != null) DestroyImmediate(materialEditor);
-                    UnityEditor.Editor tempEditor = null;
-                    CreateCachedEditor(manager.targetMaterial, typeof(MaterialEditor), ref tempEditor);
-                    materialEditor = (MaterialEditor)tempEditor;
-                }
-            }
-            else if (materialEditor != null) {
-                DestroyImmediate(materialEditor);
-                materialEditor = null;
-            }
         }
 
+        private void CleanupPreview() {
+            if (materialEditor != null) { DestroyImmediate(materialEditor); materialEditor = null; }
+            if (previewMaterial != null) { DestroyImmediate(previewMaterial); previewMaterial = null; }
+        }
 
+        private void UpdatePreviewEditor(TerrainMaterialManager manager) {
+            CleanupPreview();
+
+            if (manager != null && manager.targetMaterial != null) {
+                // Creamos un clon para que los cambios de preview sean locales al editor
+                previewMaterial = new Material(manager.targetMaterial);
+                previewMaterial.hideFlags = HideFlags.HideAndDontSave;
+
+                // Creamos el editor apuntando al clon
+                UnityEditor.Editor tempEditor = null;
+                CreateCachedEditor(previewMaterial, typeof(MaterialEditor), ref tempEditor);
+                materialEditor = (MaterialEditor)tempEditor;
+            }
+        }
 
         public override bool HasPreviewGUI() {
             var manager = (TerrainMaterialManager)target;
@@ -143,6 +140,7 @@ namespace FF.Terrain.Editor {
             if (selectedMaterialIndex < 0 || selectedMaterialIndex >= manager.materials.Count) return false;
             return materialEditor != null ? materialEditor.HasPreviewGUI() : false;
         }
+
         public override void OnPreviewSettings() {
         }
 
@@ -161,23 +159,21 @@ namespace FF.Terrain.Editor {
         }
 
         public override bool RequiresConstantRepaint() {
-            if (materialEditor != null) return materialEditor.RequiresConstantRepaint();
-            return false;
+            return materialEditor != null && materialEditor.RequiresConstantRepaint();
         }
 
         void ApplyPreviewIndex(TerrainMaterialManager manager) {
-            if (manager == null || manager.targetMaterial == null) return;
-            if (!manager.targetMaterial.HasProperty(PREVIEW_INDEX_PROP)) return;
+            if (manager == null || manager.targetMaterial == null || previewMaterial == null) return;
+            
+            previewMaterial.CopyPropertiesFromMaterial(manager.targetMaterial);
+            if (!previewMaterial.HasProperty(PREVIEW_INDEX_PROP)) return;
 
             float indexValue = -1f;
             if (selectedMaterialIndex >= 0 && selectedMaterialIndex < manager.materials.Count)
                 indexValue = selectedMaterialIndex;
 
-            manager.targetMaterial.SetFloat(PREVIEW_INDEX_PROP, indexValue);
-            Shader.SetGlobalFloat(PREVIEW_INDEX_PROP, indexValue);
+            previewMaterial.SetFloat(PREVIEW_INDEX_PROP, indexValue);
         }
-
-
 
         void DrawMaterialsList(TerrainMaterialManager manager) {
             EditorGUILayout.LabelField("Materials", EditorStyles.boldLabel);
