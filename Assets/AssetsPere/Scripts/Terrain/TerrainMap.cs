@@ -1,4 +1,5 @@
-﻿using Unity.Jobs;
+﻿using System.Collections.Generic;
+using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 
@@ -6,8 +7,13 @@ namespace FF.Terrain {
     public class TerrainMap : MonoBehaviour {
         public TerrainMaterialManager materialManager;
         public int3 gridSize = new int3(3, 1, 3); // Temporal, idealmente sera dinamico.
+        public Dictionary<int3, DCTerrainChunk> chunks = new Dictionary<int3, DCTerrainChunk>();
 
-        void Awake() {
+        public void GenerateMap() {
+            chunks.Clear();
+            Transform oldTerrainMesh = transform.Find("TerrainMesh");
+            if (oldTerrainMesh != null) DestroyImmediate(oldTerrainMesh.gameObject);
+
             if (materialManager == null) {
                 Debug.LogError("[TerrainMap] No material manager assigned.");
                 return;
@@ -28,6 +34,7 @@ namespace FF.Terrain {
 
                         DCTerrainChunk chunk = chunkObject.AddComponent<DCTerrainChunk>();
                         chunk.Initialize(materialManager.targetMaterial, coordinate);
+                        chunks[coordinate] = chunk;
 
                         BasicTerrainSDFJob sdfJob = new BasicTerrainSDFJob {
                             voxels = chunk.voxels,
